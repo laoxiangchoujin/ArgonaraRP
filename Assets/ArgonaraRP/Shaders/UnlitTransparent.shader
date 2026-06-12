@@ -18,10 +18,9 @@ Shader "Argonara RP/UnlitTransparent"
 
         Pass
         {
+            Tags{"LightMode" = "SRPDefaultUnlit"}//不写Tag的LightMode的时候，就默认是SRPDefaultUnlit
             Blend [_SrcBlend] [_DstBlend]
             ZWrite [_ZWrite]
-            
-            Tags{"LightMode" = "SRPDefaultUnlit"}//不写Tag的LightMode的时候，就默认是SRPDefaultUnlit
             
             HLSLPROGRAM
             #pragma shader_feature _CLIPPING
@@ -32,4 +31,5 @@ Shader "Argonara RP/UnlitTransparent"
             ENDHLSL
         }
     }
+    CustomEditor "ArgonaraShaderGUI"
 }

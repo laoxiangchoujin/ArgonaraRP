@@ -33,7 +33,7 @@ public partial class CameraRenderer
         }
         
         Setup();
-        lighting.Setup(context);//在绘制可见物体前，先设置场景照明
+        lighting.Setup(context, cullingResults);//在绘制可见物体前，先设置场景照明，传入相机的裁剪结果（可见范围）
         DrawVisibleGeometry(useDynamicBatching, useGPUInsancing);
         DrawUnsupportedShaders();
         DrawGizmos();

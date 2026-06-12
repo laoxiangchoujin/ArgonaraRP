@@ -3,6 +3,7 @@
 
 //汇入unity自带的参数库
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/CommonMaterial.hlsl"
 //汇入自己写的参数库
 #include "UnityInput.hlsl"
 
@@ -17,6 +18,12 @@
 #define UNITY_MATRIX_I_V unity_MatrixInvV
 #define UNITY_PREV_MATRIX_M unity_prev_MatrixM//这俩是？
 #define UNITY_PREV_MATRIX_I_M unity_prev_MatrixIM
+
+//BRDF函数归纳
+float Square(float v)
+{
+    return v*v;
+}
 
 //支持GPU实例化，使能够访问实例化数据数组
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/UnityInstancing.hlsl"

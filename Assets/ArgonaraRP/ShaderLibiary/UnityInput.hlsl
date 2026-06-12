@@ -6,6 +6,7 @@ CBUFFER_START(UnityPerDraw)//要让shader兼容SRP batcher，第二，对custom 
     float4x4 unity_WorldToObject;
     float4 unity_LODFade;
     real4 unity_WorldTransformParams;//世界空间参数，是一些转换信息，，，？
+    float3 _WorldSpaceCameraPos;
 CBUFFER_END
 
 

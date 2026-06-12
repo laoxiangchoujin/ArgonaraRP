@@ -8,22 +8,28 @@
 // float4 _BaseColor;
 // CBUFFER_END//看到某个shader的面板，SRP Batcher为compatible，就ok了
 
+TEXTURE2D(_BaseMap);
+SAMPLER(sampler_BaseMap);
 
 //对于GPU实例化，想做的事很可能是画100个颜色各不相同的球，而CBuffer里放的float4 _BaseColor就是一个固定的唯一的颜色，一个材质就只有一个颜色，这不合实例化的要求
 //改用UNITY_INSTANCING_BUFFER，会让_BaseColor变成一个数组，像是float4 _BaseColor[100]，各实例有自己的颜色，正因此我们需要实例id
 UNITY_INSTANCING_BUFFER_START(UnityPerMaterial)
+    UNITY_DEFINE_INSTANCED_PROP(float4, _BaseMap_ST)
     UNITY_DEFINE_INSTANCED_PROP(float4, _BaseColor)
+    UNITY_DEFINE_INSTANCED_PROP(float, _Cutoff)
 UNITY_INSTANCING_BUFFER_END(UnityPerMaterial)
 
 
 struct Attributes {
     float3 positionOS : POSITION;
+    float2 baseUV : TEXCOORD0;
     UNITY_VERTEX_INPUT_INSTANCE_ID//用于GPU实例化的对象索引，for vertex
 };
 
 struct Varyings
 {
     float4 positionCS : SV_POSITION;
+    float2 baseUV : VAR_BASE_UV;
     UNITY_VERTEX_INPUT_INSTANCE_ID
 };
 
@@ -34,13 +40,24 @@ Varyings UnlitPassVertex(Attributes input)// : SV_Position
     UNITY_TRANSFER_INSTANCE_ID(input, output);//索引传到frag
     float3 positionWS = TransformObjectToWorld(input.positionOS);
     output.positionCS = TransformWorldToHClip(positionWS);
+    
+    float4 baseST = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseMap_ST);
+    output.baseUV = input.baseUV * baseST.xy + baseST.zw;
     return output;
 }
 
 float4 UnlitPassFragment(Varyings input) : SV_Target
 {
     UNITY_SETUP_INSTANCE_ID(input);//frag里，使索引可用
-    return UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);//必须如此，用id获取实例化属性数组里的属性
+    //return UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);//必须如此，用id获取实例化属性数组里的属性
+    float4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.baseUV);
+    float4 baseColor = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
+    float4 base = baseMap * baseColor;
+    
+    #if defined(_CLIPPING)
+    clip(base.a - UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _Cutoff));
+    #endif
+    return base;
 }
 
 //emm，这个第二课的实例化，要知道srp batch是优先于实例化的，我们给一些物体用MPB改了参数，他们就不能做SRP bnatch了，会转而用GPU instancing来减少draw call

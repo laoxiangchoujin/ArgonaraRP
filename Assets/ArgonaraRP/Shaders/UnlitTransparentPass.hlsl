@@ -55,11 +55,4 @@ float4 UnlitTransparentPassFragment(Varyings input) : SV_Target
     return base;
 }
 
-//emm，这个第二课的实例化，要知道srp batch是优先于实例化的，我们给一些物体用MPB改了参数，他们就不能做SRP bnatch了，会转而用GPU instancing来减少draw call
-
-//关于float还是half，half当然效率更高，一般来说，float用于位置和纹理坐标，其他的用half算
-//如果您要针对移动设备进行优化，那么尽可能多地使用 half 是有意义的,当不针对移动平台时，精度不是问题，因为 GPU 总是使用 float
-//不做移动端，那我就不用half了，好
-
-
 #endif//如果包含了，就跳过
