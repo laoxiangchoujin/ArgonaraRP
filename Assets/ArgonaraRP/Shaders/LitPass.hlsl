@@ -3,6 +3,7 @@
 
 #include "../ShaderLibiary/Common.hlsl"
 #include "../ShaderLibiary/Surface.hlsl"
+#include "../ShaderLibiary/Shadows.hlsl"
 #include "../ShaderLibiary/Light.hlsl"
 #include "../ShaderLibiary/BRDF.hlsl"
 #include "../ShaderLibiary/Lighting.hlsl"
@@ -64,12 +65,15 @@ float4 LitPassFragment(Varyings input) : SV_Target
     #endif
     
     Surface surface;
+    surface.position = input.positionWS;
     surface.normal = normalize(input.normalWS);//跨三角形的线性插值会影响法线向量的长度，为了让法线都是单位长度，一定要这么干
     surface.viewDirection = normalize(_WorldSpaceCameraPos - input.positionWS);
+    surface.depth = - TransformWorldToView(input.positionWS).z;
     surface.color = base.rgb;
     surface.alpha = base.a;
     surface.metallic = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _Metallic);
     surface.smoothness = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _Smoothness);
+    surface.dither = InterleavedGradientNoise(input.positionCS.xy, 0);//Core库的生成抖动的函数，第二个参数是动画，不用
     
     #if defined(_PREMULTIPLY_ALPHA)
     BRDF brdf = GetBRDF(surface, true);

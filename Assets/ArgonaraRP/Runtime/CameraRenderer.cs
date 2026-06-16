@@ -20,33 +20,41 @@ public partial class CameraRenderer
     Lighting lighting = new Lighting();
     
     ///绘制相机能看到的所有几何图形
-    public void Render(ScriptableRenderContext context, Camera camera, bool useDynamicBatching, bool useGPUInsancing)
+    public void Render(ScriptableRenderContext context, Camera camera, bool useDynamicBatching,
+        bool useGPUInsancing, ShadowSettings shadowSettings)
     {
         this.context = context;
         this.camera = camera;
 
         PrepareBuffer();
         PrepareForSceneWindow();//给scene view里的UI物体添加到世界几何体中，因为可能会为场景增加一些几何体，所以要在剔除前做
-        if (!Cull())
+        if (!Cull(shadowSettings.maxDistance))
         {
             return;
         }
         
-        Setup();
-        lighting.Setup(context, cullingResults);//在绘制可见物体前，先设置场景照明，传入相机的裁剪结果（可见范围）
+        //如果给lighting一个专门的sample，可以在主相机claer之前，把阴影项嵌套在main camera中
+        buffer.BeginSample(SampleName);
+        ExecuteBuffer();
+        lighting.Setup(context, cullingResults, shadowSettings);//在绘制可见物体前，先设置场景照明，传入相机的裁剪结果（可见范围）
+        buffer.EndSample(SampleName);
+        
+        Setup();//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程
         DrawVisibleGeometry(useDynamicBatching, useGPUInsancing);
         DrawUnsupportedShaders();
         DrawGizmos();
+        lighting.Cleanup();//在提交之前，清空shadowmap
         Submit();
     }
 
     CullingResults cullingResults;
     
     ///应该是CPU的视锥剔除
-    bool Cull()
+    bool Cull(float maxShadowDistance)
     {
         if (camera.TryGetCullingParameters(out ScriptableCullingParameters p))
         {
+            p.shadowDistance = Mathf.Min(maxShadowDistance, camera.farClipPlane);//剔除会需要用到阴影距离，主相机周围多少米范围内的物体才需要考虑投射阴影，当然不需要比远平面还远
             cullingResults = context.Cull(ref p);
             return true;
         }

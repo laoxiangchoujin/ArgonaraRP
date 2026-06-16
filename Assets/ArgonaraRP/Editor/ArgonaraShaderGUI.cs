@@ -12,6 +12,8 @@ public class ArgonaraShaderGUI : ShaderGUI
     MaterialProperty[] properties;//属性数组
     public override void OnGUI(MaterialEditor materialEditor, MaterialProperty[] properties)
     {
+        EditorGUI.BeginChangeCheck();
+        
         base.OnGUI(materialEditor, properties);//首先获取GUI面板
         editor = materialEditor;
         materials = editor.targets;//从通用类editor的target获取材质
@@ -24,6 +26,11 @@ public class ArgonaraShaderGUI : ShaderGUI
             OpaqueClipPreset();
             AllFadePreset();
             TransparentPreset();
+        }
+
+        if (EditorGUI.EndChangeCheck())
+        {
+            SetShadowCasterPass();
         }
     }
 
@@ -138,6 +145,7 @@ public class ArgonaraShaderGUI : ShaderGUI
         if (PresetButton("Opaque"))
         {
             Clipping = false;
+            Shadows = ShadowMode.On;
             PremultiplyAlpha = false;
             SrcBlend = BlendMode.One;
             DstBlend = BlendMode.Zero;
@@ -151,6 +159,7 @@ public class ArgonaraShaderGUI : ShaderGUI
         if (PresetButton("OpaqueClip"))
         {
             Clipping = true;
+            Shadows = ShadowMode.Clip;
             PremultiplyAlpha = false;
             SrcBlend = BlendMode.One;
             DstBlend = BlendMode.Zero;
@@ -165,6 +174,7 @@ public class ArgonaraShaderGUI : ShaderGUI
         if (PresetButton("AllFade"))
         {
             Clipping = false;
+            Shadows = ShadowMode.Dither;
             PremultiplyAlpha = false;
             SrcBlend = BlendMode.SrcAlpha;
             DstBlend = BlendMode.OneMinusSrcAlpha;
@@ -179,6 +189,7 @@ public class ArgonaraShaderGUI : ShaderGUI
         if (HasPremultiplyAlpha && PresetButton("Transparent"))//材质需要有_PremulAlpha这个属性，才显示这个预设按钮
         {
             Clipping = false;
+            Shadows = ShadowMode.Dither;
             PremultiplyAlpha = true;
             SrcBlend = BlendMode.One;
             DstBlend = BlendMode.OneMinusSrcAlpha;
@@ -191,4 +202,36 @@ public class ArgonaraShaderGUI : ShaderGUI
         FindProperty(name, properties, false) != null;
     
     bool HasPremultiplyAlpha => HasProperty("_PremulAlpha");
+
+    enum ShadowMode
+    {
+        On, Clip, Dither, Off
+    }
+
+    ShadowMode Shadows
+    {
+        set
+        {
+            if (SetProperty("_Shadows", (float)value))//_Shadows是对应材质面板上的keyWord enum，给它赋值就是改这个enum在显示什么
+            {
+                SetKeyword("_SHADOWS_CLIP", value == ShadowMode.Clip);//这两步才是真的给关键词赋值
+                SetKeyword("_SHADOWS_DITHER", value == ShadowMode.Dither);
+            }
+        }
+    }
+
+    ///实现逐材质的禁用阴影，能同时禁用同一材质所有物体的阴影，比meshRenderer的禁用单个物体阴影的操作高效一些（真高效吗？）
+    void SetShadowCasterPass()
+    {
+        MaterialProperty shadows = FindProperty("_Shadows", properties, false);
+        if (shadows == null || shadows.hasMixedValue) //hasMixedValue检查所选的所有材质，比如你同时选了仨不同材质，若它们的_Shadows有不一样的就为true，因为这样不知道该开还是关
+        {
+            return;
+        }
+        bool enabled = shadows.floatValue < (float)ShadowMode.Off;
+        foreach (Material m in materials)
+        {
+            m.SetShaderPassEnabled("ShadowCaster", enabled);//如果shadows是Off，那么它==Mode.Off，enabled为false，ShadowCaster这个pass被关闭
+        }
+    }
 }

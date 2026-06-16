@@ -7,8 +7,11 @@ public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPip
     [SerializeField]
     bool useDynamicBatching = true, useGPUInstancing = true, useSRPBatcher = true;
     
+    [SerializeField]
+    ShadowSettings shadows = default;
+    
     protected override RenderPipeline CreatePipeline()
     {
-        return new ArgonaraRenderPipeline(useDynamicBatching, useGPUInstancing, useSRPBatcher);
+        return new ArgonaraRenderPipeline(useDynamicBatching, useGPUInstancing, useSRPBatcher, shadows);
     }
 }

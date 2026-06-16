@@ -25,6 +25,10 @@ float Square(float v)
     return v*v;
 }
 
+float DistanceSquared(float3 pA, float3 pB) {
+    return dot(pA - pB, pA - pB);
+}
+
 //支持GPU实例化，使能够访问实例化数据数组
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/UnityInstancing.hlsl"
 //汇入矩阵到函数库中

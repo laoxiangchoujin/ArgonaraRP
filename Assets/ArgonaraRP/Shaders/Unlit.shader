@@ -12,6 +12,8 @@ Shader "Argonara RP/Unlit"
         [Enum(UnityEngine.Rendering.BlendMode)]_DstBlend("Dst Blend",Float) = 0
         
         [Enum(Off,0,On,1)]_ZWrite("Z Write",Float) = 1
+        
+        [KeywordEnum(On, Clip, Dither, Off)]_Shadows("Cast Shadows Mode",Float)=0
     }
     SubShader
     {
@@ -29,6 +31,23 @@ Shader "Argonara RP/Unlit"
             #pragma fragment UnlitPassFragment
             #include "UnlitPass.hlsl"
             ENDHLSL
+        }
+
+        Pass
+        {
+            Tags{"LightMode" = "ShadowCaster"}
+            
+            ColorMask 0
+
+			HLSLPROGRAM
+			#pragma target 3.5
+			//#pragma shader_feature _CLIPPING
+			#pragma shader_feature _ _SHADOWS_CLIP _SHADOWS_DITHER//说是用空的关键字表示打开和关闭
+			#pragma multi_compile_instancing
+			#pragma vertex ShadowCasterPassVertex
+			#pragma fragment ShadowCasterPassFragment
+			#include "ShadowCasterPass.hlsl"
+			ENDHLSL
         }
     }
     CustomEditor "ArgonaraShaderGUI"
