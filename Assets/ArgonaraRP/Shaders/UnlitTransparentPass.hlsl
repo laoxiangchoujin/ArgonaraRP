@@ -2,7 +2,7 @@
 #ifndef CUSTOM_UNLITTRANSPARENT_PASS_INCLUDED//如果没包含，就去define
 #define CUSTOM_UNLITTRANSPARENT_PASS_INCLUDED
 
-#include "../ShaderLibiary/Common.hlsl"
+#include "../ShaderLibrary/Common.hlsl"
 
 TEXTURE2D(_BaseMap);
 SAMPLER(sampler_BaseMap);

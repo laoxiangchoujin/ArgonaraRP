@@ -107,7 +107,10 @@ public partial class CameraRenderer
         var drawingSettings = new DrawingSettings(unlitShaderTagId, sortingSettings)
         {
             enableDynamicBatching = useDynamicBatching,//开启动态批处理,把材质相同的多个小网格合并成一个大网格，减少drawcalls
-            enableInstancing = useGPUInsancing
+            enableInstancing = useGPUInsancing,
+            perObjectData = PerObjectData.Lightmaps | //用于把物体的lightmapUV传给shader
+                            PerObjectData.LightProbe | 
+                            PerObjectData.LightProbeProxyVolume
         };
         drawingSettings.SetShaderPassName(1, litShaderTagId);//启用这个tag的shader，名字确实奇怪，它是维护一个ShaderTagId的表，0是创建时候的tag，unity按照顺序去找匹配的pass
         var filteringSettings = new FilteringSettings(RenderQueueRange.opaque);//指出哪些render队列是允许的，，，这个是说渲染的quene吗，就是1000，2000那种？

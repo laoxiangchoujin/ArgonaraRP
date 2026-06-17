@@ -18,6 +18,8 @@ public class ArgonaraShaderGUI : ShaderGUI
         editor = materialEditor;
         materials = editor.targets;//从通用类editor的target获取材质
         this.properties = properties;
+        
+        BakedEmission();
 
         showPresets = EditorGUILayout.Foldout(showPresets, "Presets", true);
         if (showPresets)//默认foldout折叠的，点击才显示
@@ -31,6 +33,7 @@ public class ArgonaraShaderGUI : ShaderGUI
         if (EditorGUI.EndChangeCheck())
         {
             SetShadowCasterPass();
+            CopyLightMappingProperties();
         }
     }
 
@@ -232,6 +235,40 @@ public class ArgonaraShaderGUI : ShaderGUI
         foreach (Material m in materials)
         {
             m.SetShaderPassEnabled("ShadowCaster", enabled);//如果shadows是Off，那么它==Mode.Off，enabled为false，ShadowCaster这个pass被关闭
+        }
+    }
+
+    ///用于显示一个“全局光照”的菜单，实际只影响自发光的烘焙，也就是unity_MetaFragmentControl.y
+    void BakedEmission()
+    {
+        EditorGUI.BeginChangeCheck();
+        editor.LightmapEmissionProperty();// 画出 GI 下拉菜单（None/Baked/Realtime）
+        if (EditorGUI.EndChangeCheck()) // 用户改了菜单选项
+        {
+            foreach (Material m in editor.targets)
+            {
+                //清除 EmissiveIsBlack 标记，这个标记是，若材质的自发光为黑色，就跳过烘焙，是个优化
+                //就是说，如果只在我的自定义GUI里，改了LightmapEmissionProperty()，unity可能不知道它改了，仍然跳过
+                m.globalIlluminationFlags &= ~MaterialGlobalIlluminationFlags.EmissiveIsBlack;
+            }
+        }
+    }
+
+    void CopyLightMappingProperties()
+    {
+        MaterialProperty mainTex = FindProperty("_MainTex", properties, false);
+        MaterialProperty baseMap = FindProperty("_BaseMap", properties, false);
+        if (mainTex != null && baseMap != null)
+        {
+            mainTex.textureValue = baseMap.textureValue;
+            mainTex.textureScaleAndOffset = baseMap.textureScaleAndOffset;
+        }
+
+        MaterialProperty color = FindProperty("_Color", properties, false);
+        MaterialProperty baseColor = FindProperty("_BaseColor", properties, false);
+        if (color != null && baseColor != null)
+        {
+            color.colorValue = baseColor.colorValue;
         }
     }
 }

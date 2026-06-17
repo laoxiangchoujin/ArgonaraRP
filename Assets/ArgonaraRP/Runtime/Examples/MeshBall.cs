@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Rendering;
 
 public class MeshBall : MonoBehaviour
 {
@@ -30,14 +31,38 @@ public class MeshBall : MonoBehaviour
         }
     }
 
+    [SerializeField] LightProbeProxyVolume lightProbeVolume = null;
+    LightProbeProxyVolume storedPrevVolume;
+    
     void Update()
     {
-        if (block == null)
+        if (block == null || lightProbeVolume != storedPrevVolume)
         {
+            storedPrevVolume = lightProbeVolume;
             block = new MaterialPropertyBlock();
             block.SetVectorArray(baseColorId, baseColors);
+            block.SetFloatArray(metallicId, metallic);
+            block.SetFloatArray(smoothnessId, smoothness);
+
+            if (!lightProbeVolume)
+            {
+                var positions = new Vector3[1023]; //要为每个实例生成一个light probe，需要位置
+                for (int i = 0; i < matrices.Length; i++)
+                {
+                    positions[i] = matrices[i].GetColumn(3);
+                }
+
+                var lightProbes = new SphericalHarmonicsL2[1023];
+                LightProbes.CalculateInterpolatedLightAndOcclusionProbes(positions, lightProbes,
+                    null); //从已烘焙的探针数据里插值查询，场景里必须有烘焙过的 Light Probe Group，否则这个函数查到的是空数据，返回全零
+                block.CopySHCoefficientArraysFrom(
+                    lightProbes); //将lightProbes的数据复制到block中//UnityPerDraw 变成数组，1023 个球 → 1023 组 unity_SHAr...unity_SHC，
+            }
         }
             
-        Graphics.DrawMeshInstanced(mesh,0,material,matrices,matrices.Length,block);
+        Graphics.DrawMeshInstanced(mesh,0,material,matrices,matrices.Length,block,
+            ShadowCastingMode.On, true, 0, null,
+            lightProbeVolume ? LightProbeUsage.UseProxyVolume : LightProbeUsage.CustomProvided,
+            lightProbeVolume);
     }
 }

@@ -21,10 +21,23 @@ Shader "Argonara RP/Lit"
     	[KeywordEnum(On, Clip, Dither, Off)]_Shadows("Cast Shadows Mode",Float)=0
     	
     	[Toggle(_RECEIVE_SHADOWS)] _ReceiveShadows ("Receive Shadows", Float) = 1
+    	
+    	[NoScaleOffset] _EmissionMap("Emission", 2D) = "white" {}//因为不需要单独给这个tex弄scale和offset，它可以服用basemap的
+		[HDR] _EmissionColor("Emission", Color) = (0.0, 0.0, 0.0, 0.0)
+    	
+    	//很奇怪的做法，不区改上边的（）
+    	//Unity 的light mapper对透明度有一种固定的处理方式。它会查看材质的队列来确定它是不透明的、裁剪的还是透明的。
+    	//然后，它通过将 _MainTex 和 _Color 属性的 alpha相乘来确定透明度，使用 _Cutoff 属性进行 alpha 裁剪,一定得是这三个名字,对此unity不看shader逻辑，只看这几个材质属性
+    	[HideInInspector] _MainTex("Texture for Lightmap", 2D) = "white" {}
+		[HideInInspector] _Color("Color for Lightmap", Color) = (0.5, 0.5, 0.5, 1.0)
+    	//另外，虽然可能可以在 MetaPassFragment 中裁剪片段，但不需要这样做，因为透明度是单独处理的
     }
     SubShader
     {
-
+		HLSLINCLUDE
+		#include"../ShaderLibrary/Common.hlsl"
+		#include"LitInput.hlsl"
+    	ENDHLSL
         Pass
         {
             Tags {"LightMode" = "ArgonaraLit"}
@@ -39,6 +52,7 @@ Shader "Argonara RP/Lit"
             #pragma multi_compile _ _DIRECTIONAL_PCF3 _DIRECTIONAL_PCF5 _DIRECTIONAL_PCF7//只有一个_的是没有这些关键字，也就是pcf2x2
             #pragma multi_compile _ _CASCADE_BLEND_SOFT _CASCADE_BLEND_DITHER
             #pragma shader_feature _RECEIVE_SHADOWS
+            #pragma multi_compile _ LIGHTMAP_ON//不是_LIGHTMAP_ON？
             #pragma multi_compile_instancing
             #pragma vertex LitPassVertex
             #pragma fragment LitPassFragment
@@ -62,6 +76,19 @@ Shader "Argonara RP/Lit"
 			#include "ShadowCasterPass.hlsl"
 			ENDHLSL
         }
+
+		Pass
+		{
+			Tags{"LightMode" = "Meta"}
+			Cull Off//Meta Pass要关闭Cull
+			
+			HLSLPROGRAM
+			#pragma target 3.5
+			#pragma vertex MetaPassVertex
+			#pragma fragment MetaPassFragment
+			#include "MetaPass.hlsl"
+			ENDHLSL
+		}
     }
     CustomEditor "ArgonaraShaderGUI"//双引号里填这个ShaderGUI的类名就可，unity会自动搜索叫这个名字且继承了ShaderGUI类的class来重绘inspector
 }

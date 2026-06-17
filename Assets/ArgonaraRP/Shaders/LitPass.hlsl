@@ -1,32 +1,18 @@
 #ifndef CUSTOM_LIT_PASS_INCLUDED
 #define CUSTOM_LIT_PASS_INCLUDED
 
-#include "../ShaderLibiary/Common.hlsl"
-#include "../ShaderLibiary/Surface.hlsl"
-#include "../ShaderLibiary/Shadows.hlsl"
-#include "../ShaderLibiary/Light.hlsl"
-#include "../ShaderLibiary/BRDF.hlsl"
-#include "../ShaderLibiary/Lighting.hlsl"
-
-TEXTURE2D(_BaseMap);
-SAMPLER(sampler_BaseMap);
-
-
-//对于GPU实例化，想做的事很可能是画100个颜色各不相同的球，而CBuffer里放的float4 _BaseColor就是一个固定的唯一的颜色，一个材质就只有一个颜色，这不合实例化的要求
-//改用UNITY_INSTANCING_BUFFER，会让_BaseColor变成一个数组，像是float4 _BaseColor[100]，各实例有自己的颜色，正因此我们需要实例id
-UNITY_INSTANCING_BUFFER_START(UnityPerMaterial)
-    UNITY_DEFINE_INSTANCED_PROP(float4, _BaseMap_ST)
-    UNITY_DEFINE_INSTANCED_PROP(float4, _BaseColor)
-    UNITY_DEFINE_INSTANCED_PROP(float, _Cutoff)
-    UNITY_DEFINE_INSTANCED_PROP(float, _Metallic)
-    UNITY_DEFINE_INSTANCED_PROP(float, _Smoothness)
-UNITY_INSTANCING_BUFFER_END(UnityPerMaterial)
-
+#include "../ShaderLibrary/Surface.hlsl"
+#include "../ShaderLibrary/Shadows.hlsl"
+#include "../ShaderLibrary/Light.hlsl"
+#include "../ShaderLibrary/BRDF.hlsl"
+#include "../ShaderLibrary/GI.hlsl"
+#include "../ShaderLibrary/Lighting.hlsl"
 
 struct Attributes {
     float3 positionOS : POSITION;
     float3 normalOS : NORMAL;
     float2 baseUV : TEXCOORD0;
+    GI_ATTRIBUTE_DATA
     UNITY_VERTEX_INPUT_INSTANCE_ID//用于GPU实例化的对象索引，for vertex
 };
 
@@ -36,6 +22,7 @@ struct Varyings
     float3 positionWS : VAR_POSITION;
     float3 normalWS : VAR_NORMAL;
     float2 baseUV : VAR_BASE_UV;
+    GI_VARYINGS_DATA
     UNITY_VERTEX_INPUT_INSTANCE_ID
 };
 
@@ -44,11 +31,11 @@ Varyings LitPassVertex(Attributes input)// : SV_Position
     Varyings output;
     UNITY_SETUP_INSTANCE_ID(input);//使索引可用
     UNITY_TRANSFER_INSTANCE_ID(input, output);//索引传到frag
+    TRANSFER_GI_DATA(input, output);
     output.positionWS = TransformObjectToWorld(input.positionOS);
     output.positionCS = TransformWorldToHClip(output.positionWS);
     output.normalWS = TransformObjectToWorldNormal(input.normalOS);
-    float4 baseST = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseMap_ST);
-    output.baseUV = input.baseUV * baseST.xy + baseST.zw;
+    output.baseUV = TransformBaseUV(input.baseUV);
     return output;
 }
 
@@ -56,12 +43,13 @@ float4 LitPassFragment(Varyings input) : SV_Target
 {
     UNITY_SETUP_INSTANCE_ID(input);//frag里，使索引可用
     
-    float4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.baseUV);
-    float4 baseColor = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
-    float4 base = baseMap * baseColor;
+    // float4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.baseUV);
+    // float4 baseColor = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
+    // float4 base = baseMap * baseColor;
+    float4 base = GetBase(input.baseUV);
     
     #if defined(_CLIPPING)
-    clip(base.a - UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _Cutoff));
+        clip(base.a - GetCutoff(input.baseUV));
     #endif
     
     Surface surface;
@@ -71,18 +59,21 @@ float4 LitPassFragment(Varyings input) : SV_Target
     surface.depth = - TransformWorldToView(input.positionWS).z;
     surface.color = base.rgb;
     surface.alpha = base.a;
-    surface.metallic = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _Metallic);
-    surface.smoothness = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _Smoothness);
+    surface.metallic = GetMetallic(input.baseUV);
+    surface.smoothness = GetSmoothness(input.baseUV);
     surface.dither = InterleavedGradientNoise(input.positionCS.xy, 0);//Core库的生成抖动的函数，第二个参数是动画，不用
     
     #if defined(_PREMULTIPLY_ALPHA)
-    BRDF brdf = GetBRDF(surface, true);
+        BRDF brdf = GetBRDF(surface, true);
     #else
-    BRDF brdf = GetBRDF(surface, false);//这个函数确实有俩参数，但后边的已有默认值false，所以可以不传
+        BRDF brdf = GetBRDF(surface, false);//这个函数确实有俩参数，但后边的已有默认值false，所以可以不传
     #endif
-    float3 color = GetLighting(surface, brdf);
+    
+    GI gi = GetGI(GI_FRAGMENT_DATA(input), surface);
+    float3 color = GetLighting(surface, brdf, gi);
+    color += GetEmission(input.baseUV);
     return float4(color, surface.alpha);
-    return float4(surface.color, surface.alpha);//必须如此，用id获取实例化属性数组里的属性
+    //return float4(surface.color, surface.alpha);//必须如此，用id获取实例化属性数组里的属性
 }
 
 #endif

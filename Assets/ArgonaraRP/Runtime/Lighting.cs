@@ -61,10 +61,11 @@ public class Lighting
         }
         
         //向global缓冲区发送平行光数量，所有平行光颜色和方向
-        buffer.SetGlobalInt(dirLightCountId, visibleLights.Length);
+        buffer.SetGlobalInt(dirLightCountId, dirLightCount);
         buffer.SetGlobalVectorArray(dirLightColorsId, dirLightColors);
         buffer.SetGlobalVectorArray(dirLightDirectionsId, dirLightDirections);
         buffer.SetGlobalVectorArray(dirLightShadowDataId, dirLightShadowData);
+        //Debug.Log($"dirLightCount={dirLightCount}, visibleLights.Length={visibleLights.Length}");
     }
 
     void SetupDirectionalLight(int index, ref VisibleLight visibleLight)//如果直接把visibleLight作为参数传给此函数，会复制出一个visibleLight，而这个类型结构非常大，用引用传参，避免如此的额外内存
