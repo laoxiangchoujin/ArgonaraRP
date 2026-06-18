@@ -3,7 +3,7 @@ Shader "Argonara RP/Unlit"
     Properties
     {
         _BaseMap("基础贴图",2D)="white"{}
-        _BaseColor("基础颜色",Color) = (1,1,1,1)
+        [HDR]_BaseColor("基础颜色",Color) = (1,1,1,1)
         
         _Cutoff ("Alpha Cutoff", Range(0.0, 1.0)) = 0.5
         [Toggle(_CLIPPING)]_Clipping("Alpha Clipping",Float) = 0

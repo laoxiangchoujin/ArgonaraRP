@@ -44,6 +44,8 @@ public class Shadows
 		this.settings = settings;
 
 		ShadowedDirectionalLightCount = 0;
+
+		useShadowMask = false;
 	}
 
 	void ExecuteBuffer()
@@ -52,6 +54,7 @@ public class Shadows
 		buffer.Clear();
 	}
 	
+	//需要渲染阴影的一个定向光的配置
 	struct ShadowedDirectionalLight
 	{
 		public int visibleLightIndex;
@@ -60,17 +63,36 @@ public class Shadows
 		//所以是什么原因，作者选择不把normalBias也放进来？
 	};
 
-	ShadowedDirectionalLight[] ShadowedDirectionalLights = //存储会生成阴影的光源，当然默认就一个
-		new ShadowedDirectionalLight[maxShadowedDirectionalLightCount];
+	//待渲染阴影的光源清单
+	//ReserveDirectionalShadows 往里填，RenderDirectionalShadows(int index, int split, int tileSize)往外取
+	ShadowedDirectionalLight[] ShadowedDirectionalLights = new ShadowedDirectionalLight[maxShadowedDirectionalLightCount];
 
 	///判断光源是否生成阴影，任务是，为光源的shadowmap在阴影图集中预留空间，并存储相关信息
 	///检查定向光shadowmap是否到最大数量，若还有空间，存储index，count++
-	public Vector3 ReserveDirectionalShadows(Light light, int visibleLightIndex)
+	public Vector4 ReserveDirectionalShadows(Light light, int visibleLightIndex)
 	{
 		if (ShadowedDirectionalLightCount < maxShadowedDirectionalLightCount && //count未满
-		    light.shadows != LightShadows.None && light.shadowStrength > 0 && //光有阴影，阴影有强度
-		    cullingResults.GetShadowCasterBounds(visibleLightIndex, out Bounds b)) //说明这个index的定向光有需要渲染阴影的物体（false是没有，可能因为物体超出距离/物体不投影/没有物体被该光源影响），这函数也适用于其他类型光源
+		    light.shadows != LightShadows.None && light.shadowStrength > 0)// && //光有阴影，阴影有强度
+		    //cullingResults.GetShadowCasterBounds(visibleLightIndex, out Bounds b)) //说明这个index的定向光有需要渲染阴影的物体（false是没有，可能因为物体超出距离/物体不投影/没有物体被该光源影响），这函数也适用于其他类型光源
 		{
+			float maskChannel = -1;
+			//针对shadowMask写的		有个小问题就是，现在这个值会根据相机与物体的距离是否大于settings.maxDistance而变化。这是因为cullingResults.GetShadowCasterBounds，而cullingResults是从CameraRenderer.Cull(maxDistance)到Lighting到Shadows一路传下来的
+			//这好像反了吧，应该是没有cascade shadow的地方才用这个shadow mask吧？
+			LightBakingOutput lightBaking = light.bakingOutput;
+			if (lightBaking.lightmapBakeType == LightmapBakeType.Mixed &&//光源的“模式”
+			    lightBaking.mixedLightingMode == MixedLightingMode.Shadowmask)//照明面板的混合照明->照明模式
+			{
+				useShadowMask = true;
+				maskChannel = lightBaking.occlusionMaskChannel;//这是 Unity 烘焙时分配给每个灯的通道号（0/1/2/3）
+			}
+
+			if (!cullingResults.GetShadowCasterBounds(visibleLightIndex, out Bounds b))//把物体是否超出最大级联距离的判断后移到useShadowMask之后
+			{
+				//这是一个标记，GetShadowCasterBounds为false的时候，就是没渲染shadow map，那肯定要额外的标记，不能让shader去采样不存在的shadow map
+				//让它为负数，GetDirectionalShadowAttenuation中，shadows.hlsl的directional.strength就是负的，directional.strength × global.strength会<=0，走采样baked shadow mask的路线
+				return new Vector4(-light.shadowStrength, 0f, 0f, maskChannel);
+			}
+			
 			ShadowedDirectionalLights[ShadowedDirectionalLightCount] =
 				new ShadowedDirectionalLight
 				{
@@ -78,9 +100,9 @@ public class Shadows
 					slopeScaleBias = light.shadowBias,//Light component上边的属性，这个就是斜率bias
 					nearPlaneOffset = light.shadowNearPlane
 				};//如果某一个光要产生阴影，就记录它的index
-			return new Vector3(light.shadowStrength, settings.directional.cascadeCount * ShadowedDirectionalLightCount++, light.shadowNormalBias);//阴影强度和阴影图块偏移//第二个参数，决定每个灯的起始tile，例如4灯*4级联，第一个灯级联在0~3，第二个灯级联在4~7，第三个灯级联在8~11...
+			return new Vector4(light.shadowStrength, settings.directional.cascadeCount * ShadowedDirectionalLightCount++, light.shadowNormalBias, maskChannel);//阴影强度和阴影图块偏移//第二个参数，决定每个灯的起始tile，例如4灯*4级联，第一个灯级联在0~3，第二个灯级联在4~7，第三个灯级联在8~11...
 		}
-		return Vector3.zero;
+		return new Vector4(0f, 0f, 0f, -1f);//当光源不用shadow mask时，将索引设为 -1
 	}
 
 	///渲染阴影
@@ -96,6 +118,11 @@ public class Shadows
 			//WebGL 2.0的问题，可以用shader keyword来省略采样阴影的代码，但也挺复杂的，咱就生成一个1*1纹理来替代处理吧，正好让cleanup清理
 			buffer.GetTemporaryRT(dirShadowAtlasId,1,1,32,FilterMode.Bilinear,RenderTextureFormat.Shadowmap);
 		}
+		
+		buffer.BeginSample(bufferName);
+		SetKeywords(shadowMaskKeywords, useShadowMask ? QualitySettings.shadowmaskMode == ShadowmaskMode.Shadowmask ? 0 : 1 : -1);
+		buffer.EndSample(bufferName);
+		ExecuteBuffer();
 	}
 
 	///渲染所有定向光阴影
@@ -262,4 +289,16 @@ public class Shadows
 		"_CASCADE_BLEND_SOFT",
 		"_CASCADE_BLEND_DITHER"
 	};
+	
+	
+	
+	//以下为shadowMask的内容
+	private static string[] shadowMaskKeywords = //项目设置->质量，shadowmask的两种类型
+	{
+		"_SHADOW_MASK_ALWAYS",//shadowmask模式				不会为静态物体渲染实时阴影，静态物体只用烘焙阴影		是unity内部代码，用这个模式就不执行静态物体的"Shadow Caster Pass"，省的消耗就是这个，仍会采样shadow map，但采样的时候对应位置没内容，和baked阴影取min，就是采用baked阴影
+		"_SHADOW_MASK_DISTANCE"//distance shadowmask模式	静态物体用实时和烘焙的混合
+	};
+
+	//是否使用阴影遮罩	每帧重新评估该字段
+	private bool useShadowMask;
 }

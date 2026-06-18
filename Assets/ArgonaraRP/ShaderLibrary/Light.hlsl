@@ -24,9 +24,10 @@ int GetDirectionalLightCount()
 ///获取定向光的阴影数据，有阴影强度和在atlas上的index
 DirectionalShadowData GetDirectionalShadowData (int lightIndex, ShadowData shadowData) {
     DirectionalShadowData data;
-    data.strength = _DirectionalLightShadowData[lightIndex].x * shadowData.strength;//右半的强度，是区分，是否太远超出最大cascade
+    data.strength = _DirectionalLightShadowData[lightIndex].x;// * shadowData.strength;//右半的强度，是区分，是否太远超出最大cascade  现在不在这判断了，因为远处要和shadow mask混合，放到shadows.hlsl的MixBakedAndRealtimeShadows里
     data.tileIndex = _DirectionalLightShadowData[lightIndex].y + shadowData.cascadeIndex;//左半是第几个灯，右半是灯的第几个级联
     data.normalBias = _DirectionalLightShadowData[lightIndex].z;
+    data.shadowMaskChannel = _DirectionalLightShadowData[lightIndex].w;//本个定向光对应着shadow mask图的哪个通道
     return data;
 }
 

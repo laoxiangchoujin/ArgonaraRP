@@ -29,6 +29,10 @@ float DistanceSquared(float3 pA, float3 pB) {
     return dot(pA - pB, pA - pB);
 }
 
+#if defined(_SHADOW_MASK_ALWAYS) || defined(_SHADOW_MASK_DISTANCE)//对于occlusion probe，UnityInstancing 仅在定义了 SHADOWS_SHADOWMASK 时才能实例化
+    #define SHADOWS_SHADOWMASK
+#endif
+
 //支持GPU实例化，使能够访问实例化数据数组
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/UnityInstancing.hlsl"
 //汇入矩阵到函数库中

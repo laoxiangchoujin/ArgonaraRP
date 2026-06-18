@@ -12,7 +12,7 @@ CBUFFER_START(UnityPerDraw)//要让shader兼容SRP batcher，第二，对custom 
     float4 unity_LightmapST;
     float4 unity_DynamicLightmapST;//说是它已被弃用，但还是放上吧
 
-    float4 unity_SHAr;//light probe用到的球谐数据
+    float4 unity_SHAr;//light probe用到的球谐数据（动态对象）
     float4 unity_SHAg;
     float4 unity_SHAb;
     float4 unity_SHBr;
@@ -20,10 +20,12 @@ CBUFFER_START(UnityPerDraw)//要让shader兼容SRP batcher，第二，对custom 
     float4 unity_SHBb;
     float4 unity_SHC;
 
-    float4 unity_ProbeVolumeParams;//用于LPPV（光照探针proxy volume代理体积）的per Object Data
+    float4 unity_ProbeVolumeParams;//用于LPPV（光照探针proxy volume代理体积）的per Object Data（动态对象）
     float4x4 unity_ProbeVolumeWorldToObject;
     float4 unity_ProbeVolumeSizeInv;
     float4 unity_ProbeVolumeMin;
+
+    float4 unity_ProbesOcclusion;//occlusion probe(阴影探针)的数据（动态对象）
 CBUFFER_END
 
 

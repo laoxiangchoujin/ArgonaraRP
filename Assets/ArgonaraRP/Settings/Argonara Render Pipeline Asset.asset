@@ -10,13 +10,13 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: b4bd54641cb139d4ea7eac33e6012d52, type: 3}
-  m_Name: Argonara Render Pipeline
+  m_Name: Argonara Render Pipeline Asset
   m_EditorClassIdentifier: 
   useDynamicBatching: 1
   useGPUInstancing: 1
   useSRPBatcher: 1
   shadows:
-    maxDistance: 100
+    maxDistance: 10
     distanceFade: 0.1
     directional:
       atlasSize: 1024
