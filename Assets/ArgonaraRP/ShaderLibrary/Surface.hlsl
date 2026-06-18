@@ -11,6 +11,7 @@ struct Surface
     float alpha;
     float metallic;
     float smoothness;
+    float fresnelStrength;
     float dither;//最开始引入是，实现cascade blend的dither混合
 };
 

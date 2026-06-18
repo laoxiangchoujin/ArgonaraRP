@@ -104,7 +104,7 @@ float GetCascadedShadow(DirectionalShadowData directional, ShadowData global, Su
     return shadow;
 }
 
-float GetBakedShadow(ShadowMask mask, int channel)
+float GetBakedShadow(ShadowMask mask, int channel)//直接采样到的烘焙值
 {
     float shadow = 1.0;
     if (mask.always || mask.distance)
@@ -117,7 +117,7 @@ float GetBakedShadow(ShadowMask mask, int channel)
 }
 
 ///用于支持，存在shadow mask同时没有实时阴影的情况
-float GetBakedShadow (ShadowMask mask, int channel, float strength) {
+float GetBakedShadow (ShadowMask mask, int channel, float strength) {//采样的烘焙值，用光源的阴影强度调整过的
     if (mask.always || mask.distance) {
         return lerp(1.0, GetBakedShadow(mask, channel), strength);
     }
@@ -150,7 +150,7 @@ float GetDirectionalShadowAttenuation (DirectionalShadowData directional, Shadow
     // if (directional.strength <= 0.0) {//旧写法，directional.strength是定向光的阴影强度，当相机离太远，物体超出最大级联距离 → GetShadowCasterBounds 返回 false → ReserveDirectionalShadows 返回 Vector3.zero → directional.strength = 0，就完全没有任何阴影
     //     shadow = 1.0;
     // }
-    if (directional.strength * global.strength <= 0.0)//新写法，物体离相机太远超出最大级联距离，或，像素接近最外层级联外边缘强度降到0，这个实际上是“实时阴影完全不可用”的情况，就采样烘焙的shadow
+    if (directional.strength * global.strength <= 0.0)//新写法，物体离相机太远超出最大级联距离，或，像素在最外层级联外边缘强度已经降到0，这个实际上是“实时阴影完全不可用”的情况，就采样烘焙的shadow
     {
         shadow = GetBakedShadow(global.shadowMask, directional.shadowMaskChannel, abs(directional.strength));//这里的abs，是cullingResults.GetShadowCasterBounds为false的情况
     }

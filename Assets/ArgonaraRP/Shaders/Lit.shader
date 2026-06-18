@@ -10,6 +10,7 @@ Shader "Argonara RP/Lit"
         
         _Metallic ("Metallic", Range(0, 1)) = 0
 		_Smoothness ("Smoothness", Range(0, 1)) = 0.5
+    	_Fresnel ("Fresnel", Range(0, 1)) = 1
         
         [Toggle(_PREMULTIPLY_ALPHA)]_PremulAlpha("Premultiply Alpha（如果是玻璃，启用它，并且One,OneMinusSrcAlpha）",Float)=0
         
@@ -54,6 +55,7 @@ Shader "Argonara RP/Lit"
             #pragma shader_feature _RECEIVE_SHADOWS
             #pragma multi_compile _ LIGHTMAP_ON//不是_LIGHTMAP_ON？
             #pragma multi_compile _ _SHADOW_MASK_ALWAYS _SHADOW_MASK_DISTANCE
+            #pragma multi_compile _ LOD_FADE_CROSSFADE
             #pragma multi_compile_instancing
             #pragma vertex LitPassVertex
             #pragma fragment LitPassFragment
@@ -71,6 +73,7 @@ Shader "Argonara RP/Lit"
 			#pragma target 3.5
 			//#pragma shader_feature _CLIPPING
 			#pragma shader_feature _ _SHADOWS_CLIP _SHADOWS_DITHER//说是用空的关键字表示打开和关闭
+			#pragma multi_compile _ LOD_FADE_CROSSFADE
 			#pragma multi_compile_instancing
 			#pragma vertex ShadowCasterPassVertex
 			#pragma fragment ShadowCasterPassFragment

@@ -108,7 +108,8 @@ public partial class CameraRenderer
         {
             enableDynamicBatching = useDynamicBatching,//开启动态批处理,把材质相同的多个小网格合并成一个大网格，减少drawcalls
             enableInstancing = useGPUInsancing,
-            perObjectData = PerObjectData.Lightmaps | //用于把物体的lightmapUV传给shader
+            perObjectData = PerObjectData.ReflectionProbes |//每个对象都要有反射探针
+                            PerObjectData.Lightmaps | //用于把物体的lightmapUV传给shader
                             PerObjectData.ShadowMask |
                             PerObjectData.LightProbe | 
                             PerObjectData.OcclusionProbe |

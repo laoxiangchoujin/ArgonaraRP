@@ -8,6 +8,8 @@ struct BRDF
     float3 diffuse;
     float3 specular;
     float roughness;
+    float perceptualRoughness;//用这个粗糙度，获取镜面反射的mip级别，高mip级别模拟模糊的反射
+    float fresnel;
 };
 
 float OneMinusReflectivity(float metallic)//返回的是1-Ks，也就是Kd
@@ -34,6 +36,14 @@ float3 DirectBRDF(Surface surface, BRDF brdf, Light light)
     return SpecularStrength(surface, brdf, light) * brdf.specular + brdf.diffuse;
 }
 
+float3 IndirectBRDF(Surface surface, BRDF brdf, float3 diffuse, float3 specular)//好像说，这里的diffuse和specular是全局光照的结果？
+{
+    float fresnelStrength = surface.fresnelStrength * Pow4(1.0 - saturate(dot(surface.normal, surface.viewDirection)));
+    float3 reflection = specular * lerp(brdf.specular, brdf.fresnel, fresnelStrength);
+    reflection /= brdf.roughness * brdf.roughness + 1.0;//粗糙度会让反射发生散射，这里，最大粗糙度让反射减半
+    return diffuse * brdf.diffuse + reflection;
+}
+
 BRDF GetBRDF(inout Surface surface, bool applyAlphaToDiffuse = false)//我们可能会在此修改surface，故改为inout
 {
     BRDF brdf;
@@ -46,8 +56,9 @@ BRDF GetBRDF(inout Surface surface, bool applyAlphaToDiffuse = false)//我们可
         brdf.diffuse *= surface.alpha;
     }
     brdf.specular = lerp(MIN_REFLECTIVITY, surface.color, surface.metallic);//若金属度为1，specular为color，   若金属度为0，specular为0.04     这个值就是Ks
-    float perceptualRoughness = PerceptualSmoothnessToPerceptualRoughness(surface.smoothness);//1-perceptual smoothness
-    brdf.roughness = PerceptualRoughnessToRoughness(perceptualRoughness);//对perceptual roughness平方
+    brdf.perceptualRoughness =PerceptualSmoothnessToPerceptualRoughness(surface.smoothness);//1-perceptual smoothness
+    brdf.roughness = PerceptualRoughnessToRoughness(brdf.perceptualRoughness);//对perceptual roughness平方
+    brdf.fresnel = saturate(surface.smoothness + 1.0 - oneMinusReflectivity);//?
     return brdf;
 }
 

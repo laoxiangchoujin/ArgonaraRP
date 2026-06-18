@@ -43,6 +43,11 @@ float4 LitPassFragment(Varyings input) : SV_Target
 {
     UNITY_SETUP_INSTANCE_ID(input);//frag里，使索引可用
     
+    // #if defined(LOD_FADE_CROSSFADE)
+    // return unity_LODFade.x;
+    // #endif
+    ClipLOD(input.positionCS.xy, unity_LODFade.x);
+    
     // float4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.baseUV);
     // float4 baseColor = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
     // float4 base = baseMap * baseColor;
@@ -61,6 +66,7 @@ float4 LitPassFragment(Varyings input) : SV_Target
     surface.alpha = base.a;
     surface.metallic = GetMetallic(input.baseUV);
     surface.smoothness = GetSmoothness(input.baseUV);
+    surface.fresnelStrength = GetFresnel(input.baseUV);
     surface.dither = InterleavedGradientNoise(input.positionCS.xy, 0);//Core库的生成抖动的函数，第二个参数是动画，不用
     
     #if defined(_PREMULTIPLY_ALPHA)
@@ -69,7 +75,7 @@ float4 LitPassFragment(Varyings input) : SV_Target
         BRDF brdf = GetBRDF(surface, false);//这个函数确实有俩参数，但后边的已有默认值false，所以可以不传
     #endif
     
-    GI gi = GetGI(GI_FRAGMENT_DATA(input), surface);
+    GI gi = GetGI(GI_FRAGMENT_DATA(input), surface, brdf);
     float3 color = GetLighting(surface, brdf, gi);
     color += GetEmission(input.baseUV);
     return float4(color, surface.alpha);

@@ -26,6 +26,8 @@ CBUFFER_START(UnityPerDraw)//要让shader兼容SRP batcher，第二，对custom 
     float4 unity_ProbeVolumeMin;
 
     float4 unity_ProbesOcclusion;//occlusion probe(阴影探针)的数据（动态对象）
+
+    float4 unity_SpecCube0_HDR;
 CBUFFER_END
 
 
