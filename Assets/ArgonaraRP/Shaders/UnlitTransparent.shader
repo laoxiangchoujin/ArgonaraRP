@@ -15,7 +15,10 @@ Shader "Argonara RP/UnlitTransparent"
     }
     SubShader
     {
-
+		HLSLINCLUDE
+		#include "../ShaderLibrary/Common.hlsl"
+		#include "UnlitInput.hlsl"
+		ENDHLSL
         Pass
         {
             Tags{"LightMode" = "SRPDefaultUnlit"}//不写Tag的LightMode的时候，就默认是SRPDefaultUnlit

@@ -5,11 +5,13 @@ struct Surface
 {
     float3 position;
     float3 normal;
+    float3 interpolatedNormal;//内插法线，它不受法线图影响，用于阴影贴图位移
     float3 viewDirection;//视线方向也要作为表面数据传参
     float depth;
     float3 color;
     float alpha;
     float metallic;
+    float occlusion;
     float smoothness;
     float fresnelStrength;
     float dither;//最开始引入是，实现cascade blend的dither混合

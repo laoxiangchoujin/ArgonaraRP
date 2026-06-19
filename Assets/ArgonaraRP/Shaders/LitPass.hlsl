@@ -11,9 +11,10 @@
 struct Attributes {
     float3 positionOS : POSITION;
     float3 normalOS : NORMAL;
+    float4 tangentOS : TANGENT;
     float2 baseUV : TEXCOORD0;
     GI_ATTRIBUTE_DATA
-    UNITY_VERTEX_INPUT_INSTANCE_ID//用于GPU实例化的对象索引，for vertex
+    UNITY_VERTEX_INPUT_INSTANCE_ID
 };
 
 struct Varyings
@@ -21,7 +22,13 @@ struct Varyings
     float4 positionCS : SV_POSITION;
     float3 positionWS : VAR_POSITION;
     float3 normalWS : VAR_NORMAL;
+    #if defined(_NORMAL_MAP)
+        float4 tangentWS : VAR_TANGENT;
+    #endif
     float2 baseUV : VAR_BASE_UV;
+    #if defined(_DETAIL_MAP)
+        float2 detailUV : VAR_DETAIL_UV;
+    #endif
     GI_VARYINGS_DATA
     UNITY_VERTEX_INPUT_INSTANCE_ID
 };
@@ -29,57 +36,81 @@ struct Varyings
 Varyings LitPassVertex(Attributes input)// : SV_Position
 {
     Varyings output;
-    UNITY_SETUP_INSTANCE_ID(input);//使索引可用
-    UNITY_TRANSFER_INSTANCE_ID(input, output);//索引传到frag
+    UNITY_SETUP_INSTANCE_ID(input);
+    UNITY_TRANSFER_INSTANCE_ID(input, output);
     TRANSFER_GI_DATA(input, output);
     output.positionWS = TransformObjectToWorld(input.positionOS);
     output.positionCS = TransformWorldToHClip(output.positionWS);
     output.normalWS = TransformObjectToWorldNormal(input.normalOS);
+    #if defined(_NORMAL_MAP)
+        output.tangentWS = float4(TransformObjectToWorldDir(input.tangentOS.xyz), input.tangentOS.w);
+    #endif
     output.baseUV = TransformBaseUV(input.baseUV);
+    #if defined(_DETAIL_MAP)
+        output.detailUV = TransformDetailUV(input.baseUV);
+    #endif
     return output;
 }
 
 float4 LitPassFragment(Varyings input) : SV_Target
 {
-    UNITY_SETUP_INSTANCE_ID(input);//frag里，使索引可用
+    UNITY_SETUP_INSTANCE_ID(input);
     
-    // #if defined(LOD_FADE_CROSSFADE)
-    // return unity_LODFade.x;
-    // #endif
     ClipLOD(input.positionCS.xy, unity_LODFade.x);
     
-    // float4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.baseUV);
-    // float4 baseColor = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
-    // float4 base = baseMap * baseColor;
-    float4 base = GetBase(input.baseUV);
+    InputConfig config = GetInputConfig(input.baseUV);
+    #if defined(_MASK_MAP)
+        config.useMask = true;
+    #endif
+    #if defined(_DETAIL_MAP)
+    config.detailUV = input.detailUV;
+    config.useDetail = true;
+    #endif
+    
+    float4 base = GetBase(config);
     
     #if defined(_CLIPPING)
-        clip(base.a - GetCutoff(input.baseUV));
+        clip(base.a - GetCutoff(config));
     #endif
     
     Surface surface;
     surface.position = input.positionWS;
-    surface.normal = normalize(input.normalWS);//跨三角形的线性插值会影响法线向量的长度，为了让法线都是单位长度，一定要这么干
+    #if defined(_NORMAL_MAP)
+        surface.normal = NormalTangentToWorld(GetNormalTS(config), input.normalWS, input.tangentWS);
+        surface.interpolatedNormal = normalize(input.normalWS);
+    #else
+        surface.normal = normalize(input.normalWS);
+        surface.interpolatedNormal = surface.normal;
+    #endif
     surface.viewDirection = normalize(_WorldSpaceCameraPos - input.positionWS);
     surface.depth = - TransformWorldToView(input.positionWS).z;
     surface.color = base.rgb;
     surface.alpha = base.a;
-    surface.metallic = GetMetallic(input.baseUV);
-    surface.smoothness = GetSmoothness(input.baseUV);
-    surface.fresnelStrength = GetFresnel(input.baseUV);
-    surface.dither = InterleavedGradientNoise(input.positionCS.xy, 0);//Core库的生成抖动的函数，第二个参数是动画，不用
+    surface.metallic = GetMetallic(config);
+    surface.occlusion = GetOcclusion(config);
+    surface.smoothness = GetSmoothness(config);
+    surface.fresnelStrength = GetFresnel(config);
+    surface.dither = InterleavedGradientNoise(input.positionCS.xy, 0);
     
     #if defined(_PREMULTIPLY_ALPHA)
         BRDF brdf = GetBRDF(surface, true);
     #else
-        BRDF brdf = GetBRDF(surface, false);//这个函数确实有俩参数，但后边的已有默认值false，所以可以不传
+        BRDF brdf = GetBRDF(surface, false);
     #endif
     
     GI gi = GetGI(GI_FRAGMENT_DATA(input), surface, brdf);
     float3 color = GetLighting(surface, brdf, gi);
-    color += GetEmission(input.baseUV);
+    color += GetEmission(config);
+    
+    //有一些比较幽默的事情，关于纹理和采样器混用，造成的“采样器未声明”的报错
+    //例如SAMPLE_TEXTURE2D(_MaskMap, sampler_BaseMap, input.baseUV);混用了Mask贴图和基础纹理，直接输出就会报错，说"uncognized sampler(sampler_basemap)"
+    //但是，如果在一次调用中，同时还正确的用了这个sampler及sampler对应的纹理，就不会如此报错，如SAMPLE_TEXTURE2D(_MaskMap, sampler_BaseMap, input.baseUV) * SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, config.baseUV);
+    //编译器不查混用，只查“孤儿”
+    //所以这也就是，你现在不启用_MASK_MAP的时候，单独输出GetSmoothness就会报错的原因
+   
+    //return GetSmoothness(config);
+    
     return float4(color, surface.alpha);
-    //return float4(surface.color, surface.alpha);//必须如此，用id获取实例化属性数组里的属性
 }
 
 #endif

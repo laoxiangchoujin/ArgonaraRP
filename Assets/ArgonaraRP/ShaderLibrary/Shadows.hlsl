@@ -91,13 +91,13 @@ float GetCascadedShadow(DirectionalShadowData directional, ShadowData global, Su
     // CPU端ReserveDirectionalShadows的.y是每个灯的起始偏移，存入Light.hlsl的_DirectionalLightShadowData[lightIndex].y，，，
     //      RenderDirectionalShadows按tileIndex索引写入dirShadowMatrices[tileIndex]
     // GPU端Light.hlsl里GetDirectionalShadowData从_DirectionalLightShadowData[lightIndex].y + cascadeIndex 还原tileIndex，用它取对应矩阵，保证矩阵数组索引一一对应
-    float3 normalBias = surfaceWS.normal * (directional.normalBias * _CascadeData[global.cascadeIndex].y);;//这个y是，shadow map的tile纹素在世界空间中对应的长度，在阴影采样时，在法线方向上偏移这么多，避免阴影边缘的锯齿
+    float3 normalBias = surfaceWS.interpolatedNormal  * (directional.normalBias * _CascadeData[global.cascadeIndex].y);;//这个y是，shadow map的tile纹素在世界空间中对应的长度，在阴影采样时，在法线方向上偏移这么多，避免阴影边缘的锯齿
     float3 positionSTS = mul(_DirectionalShadowMatrices[directional.tileIndex],float4(surfaceWS.position +normalBias, 1.0)).xyz;
     float shadow = FilterDirectionalShadow(positionSTS);//正带上pcf滤波，去采样
     
     if (global.cascadeBlend < 1.0)//在两个级联的交界混合区域
     {
-        normalBias = surfaceWS.normal * (directional.normalBias * _CascadeData[global.cascadeIndex + 1].y);
+        normalBias = surfaceWS.interpolatedNormal  * (directional.normalBias * _CascadeData[global.cascadeIndex + 1].y);
         positionSTS = mul(_DirectionalShadowMatrices[directional.tileIndex + 1],float4(surfaceWS.position +normalBias, 1.0)).xyz;
         shadow = lerp(FilterDirectionalShadow(positionSTS), shadow, global.cascadeBlend);
     }

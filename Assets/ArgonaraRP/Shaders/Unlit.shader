@@ -3,7 +3,7 @@ Shader "Argonara RP/Unlit"
     Properties
     {
         _BaseMap("基础贴图",2D)="white"{}
-        [HDR]_BaseColor("基础颜色",Color) = (1,1,1,1)
+        _BaseColor("基础颜色",Color) = (1.0, 1.0, 1.0, 1.0)
         
         _Cutoff ("Alpha Cutoff", Range(0.0, 1.0)) = 0.5
         [Toggle(_CLIPPING)]_Clipping("Alpha Clipping",Float) = 0
@@ -14,8 +14,6 @@ Shader "Argonara RP/Unlit"
         [Enum(Off,0,On,1)]_ZWrite("Z Write",Float) = 1
         
         [KeywordEnum(On, Clip, Dither, Off)]_Shadows("Cast Shadows Mode",Float)=0
-    	
-    	[HDR] _BaseColor("Color", Color) = (1.0, 1.0, 1.0, 1.0)
     }
     SubShader
     {

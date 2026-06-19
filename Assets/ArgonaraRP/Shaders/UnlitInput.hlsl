@@ -3,10 +3,11 @@
 
 TEXTURE2D(_BaseMap);
 SAMPLER(sampler_BaseMap);
+TEXTURE2D(_EmissionMap);
+SAMPLER(sampler_EmissionMap);
 
+#define INPUT_PROP(name) UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, name)
 
-//对于GPU实例化，想做的事很可能是画100个颜色各不相同的球，而CBuffer里放的float4 _BaseColor就是一个固定的唯一的颜色，一个材质就只有一个颜色，这不合实例化的要求
-//改用UNITY_INSTANCING_BUFFER，会让_BaseColor变成一个数组，像是float4 _BaseColor[100]，各实例有自己的颜色，正因此我们需要实例id
 UNITY_INSTANCING_BUFFER_START(UnityPerMaterial)
 	UNITY_DEFINE_INSTANCED_PROP(float4, _BaseMap_ST)
 	UNITY_DEFINE_INSTANCED_PROP(float4, _BaseColor)
@@ -14,34 +15,46 @@ UNITY_INSTANCING_BUFFER_START(UnityPerMaterial)
 	UNITY_DEFINE_INSTANCED_PROP(float, _Cutoff)
 UNITY_INSTANCING_BUFFER_END(UnityPerMaterial)
 
+struct InputConfig {
+	float2 baseUV;
+};
+
+InputConfig GetInputConfig (float2 baseUV) {
+	InputConfig c;
+	c.baseUV = baseUV;
+	return c;
+}
+
 float2 TransformBaseUV (float2 baseUV) {
-	float4 baseST = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseMap_ST);
+	float4 baseST = INPUT_PROP(_BaseMap_ST);
 	return baseUV * baseST.xy + baseST.zw;
 }
 
-float4 GetBase (float2 baseUV) {
-	float4 map = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, baseUV);
-	float4 color = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
+float4 GetBase (InputConfig c) {
+	float4 map = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, c.baseUV);
+	float4 color = INPUT_PROP(_BaseColor);
 	return map * color;
 }
 
-float GetCutoff (float2 baseUV) {
-	return UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _Cutoff);
+float GetCutoff (InputConfig c) {
+	return INPUT_PROP(_Cutoff);
 }
 
-float GetMetallic (float2 baseUV) {
+float GetMetallic (InputConfig c) {
 	return 0.0;
 }
 
-float GetSmoothness (float2 baseUV) {
+float GetSmoothness (InputConfig c) {
 	return 0.0;
 }
 
-float3 GetEmission (float2 baseUV) {
-	return GetBase(baseUV).rgb;
+float3 GetEmission (InputConfig c) {
+	float4 map = SAMPLE_TEXTURE2D(_EmissionMap, sampler_EmissionMap, c.baseUV);
+	float4 color = INPUT_PROP(_EmissionColor);
+	return map.rgb * color.rgb;
 }
 
-float GetFresnel (float2 baseUV) {
+float GetFresnel (InputConfig c) {
 	return 0.0;
 }
 

@@ -3,15 +3,34 @@ Shader "Argonara RP/Lit"
     Properties
     {
         _BaseMap("基础贴图", 2D) = "white" {}
-		_BaseColor("基础颜色", Color) = (0.5, 0.5, 0.5, 1.0)
+		_BaseColor("基础颜色", Color) = (1.0, 1.0, 1.0, 1.0)
         
         _Cutoff ("Alpha Cutoff", Range(0.0, 1.0)) = 0.5
         [Toggle(_CLIPPING)]_Clipping("Alpha Clipping",Float) = 0
         
+    	[Toggle(_MASK_MAP)] _MaskMapToggle ("Mask Map", Float) = 0
+    	[NoScaleOffset] _MaskMap("Mask (MODS)", 2D) = "white" {}
         _Metallic ("Metallic", Range(0, 1)) = 0
+    	_Occlusion ("Occlusion", Range(0, 1)) = 1
 		_Smoothness ("Smoothness", Range(0, 1)) = 0.5
     	_Fresnel ("Fresnel", Range(0, 1)) = 1
         
+    	[Toggle(_NORMAL_MAP)] _NormalMapToggle ("Normal Map", Float) = 0
+    	[NoScaleOffset]_NormalMap("Normals",2D) = "bump"{}
+    	_NormalScale("Normal Scale",Range(0,1)) = 1
+    	
+    	[NoScaleOffset] _EmissionMap("Emission Map", 2D) = "white" {}//因为不需要单独给这个tex弄scale和offset，它可以服用basemap的
+		[HDR] _EmissionColor("Emission", Color) = (0.0, 0.0, 0.0, 0.0)
+    	
+    	[Toggle(_DETAIL_MAP)] _DetailMapToggle ("Detail Maps", Float) = 0
+    	_DetailMap("Details Map", 2D) = "linearGrey" {}
+    	_DetailNormalMap("Detail Normals",2D)="bump"{}
+    	_DetailAlbedo("Detail Albedo", Range(0, 1)) = 1
+    	_DetailSmoothness("Detail Smoothness", Range(0, 1)) = 1
+    	_DetailNormalScale("Detail Normal Scale",Range(0,1)) = 1
+    	
+    	//---------------以下是设置-----------------//
+    	
         [Toggle(_PREMULTIPLY_ALPHA)]_PremulAlpha("Premultiply Alpha（如果是玻璃，启用它，并且One,OneMinusSrcAlpha）",Float)=0
         
         [Enum(UnityEngine.Rendering.BlendMode)]_SrcBlend("Src Blend",Float) = 5
@@ -23,11 +42,10 @@ Shader "Argonara RP/Lit"
     	
     	[Toggle(_RECEIVE_SHADOWS)] _ReceiveShadows ("Receive Shadows", Float) = 1
     	
-    	[NoScaleOffset] _EmissionMap("Emission", 2D) = "white" {}//因为不需要单独给这个tex弄scale和offset，它可以服用basemap的
-		[HDR] _EmissionColor("Emission", Color) = (0.0, 0.0, 0.0, 0.0)
     	
-    	//很奇怪的做法，不区改上边的（）
-    	//Unity 的light mapper对透明度有一种固定的处理方式。它会查看材质的队列来确定它是不透明的、裁剪的还是透明的。
+    	
+    	//很奇怪的做法，不去改上边的（）
+    	//烘焙光照时，Unity 的light mapper对透明度有一种固定的处理方式。它会查看材质的队列来确定它是不透明的、裁剪的还是透明的。
     	//然后，它通过将 _MainTex 和 _Color 属性的 alpha相乘来确定透明度，使用 _Cutoff 属性进行 alpha 裁剪,一定得是这三个名字,对此unity不看shader逻辑，只看这几个材质属性
     	[HideInInspector] _MainTex("Texture for Lightmap", 2D) = "white" {}
 		[HideInInspector] _Color("Color for Lightmap", Color) = (0.5, 0.5, 0.5, 1.0)
@@ -56,6 +74,9 @@ Shader "Argonara RP/Lit"
             #pragma multi_compile _ LIGHTMAP_ON//不是_LIGHTMAP_ON？
             #pragma multi_compile _ _SHADOW_MASK_ALWAYS _SHADOW_MASK_DISTANCE
             #pragma multi_compile _ LOD_FADE_CROSSFADE
+            #pragma shader_feature _NORMAL_MAP
+            #pragma shader_feature _MASK_MAP
+            #pragma shader_feature _DETAIL_MAP
             #pragma multi_compile_instancing
             #pragma vertex LitPassVertex
             #pragma fragment LitPassFragment

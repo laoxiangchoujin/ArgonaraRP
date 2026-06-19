@@ -30,7 +30,7 @@ Varyings ShadowCasterPassVertex(Attributes input)// : SV_Position
     #else
         output.positionCS.z =max(output.positionCS.z, output.positionCS.w * UNITY_NEAR_CLIP_VALUE);//opengl没reverse z，1表示深度大，只要深度比near更大就行
     #endif
-    //↑上边的方法，适用于“完全在近平面前边/完全在它后边的几何”
+    //↑上边的方法，适用于"完全在近平面前边/完全在它后边的几何"
     //对于一个跨越了近平面的三角形，例如俩顶点在near前，一个在near后，这样做就会导致这个三角形投射的阴影变形，尤其是很大的如此的三角形，那会很明显
     
     output.baseUV = TransformBaseUV(input.baseUV);
@@ -43,10 +43,11 @@ void ShadowCasterPassFragment(Varyings input)
     
     ClipLOD(input.positionCS.xy, unity_LODFade.x);
     
-    float4 base = GetBase(input.baseUV);
+    InputConfig config = GetInputConfig(input.baseUV);
+    float4 base = GetBase(config);
     
     #if defined(_SHADOWS_CLIP)
-        clip(base.a - GetCutoff(input.baseUV));
+        clip(base.a - GetCutoff(config));
         #elif defined(_SHADOWS_DITHER)
             float dither = InterleavedGradientNoise(input.positionCS.xy, 0);
             clip(base.a - dither);

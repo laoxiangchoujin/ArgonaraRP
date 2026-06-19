@@ -32,12 +32,13 @@ Varyings MetaPassVertex (Attributes input) {
 }
 
 float4 MetaPassFragment (Varyings input) : SV_TARGET {
-	float4 base = GetBase(input.baseUV);
+	InputConfig config = GetInputConfig(input.baseUV);
+	float4 base = GetBase(config);
 	Surface surface;
 	ZERO_INITIALIZE(Surface, surface);
 	surface.color = base.rgb;
-	surface.metallic = GetMetallic(input.baseUV);
-	surface.smoothness = GetSmoothness(input.baseUV);
+	surface.metallic = GetMetallic(config);
+	surface.smoothness = GetSmoothness(config);
 	BRDF brdf = GetBRDF(surface);
 	float4 meta = 0.0;
 	
@@ -47,8 +48,8 @@ float4 MetaPassFragment (Varyings input) : SV_TARGET {
 		meta.rgb += brdf.specular * brdf.roughness * 0.5;//添加0.5*经过粗糙度缩放的specular来提升结果。背后的理念是高度镜面反射但粗糙的材质也会传递一些间接光//不用smoothness是因为，是间接光
 		meta.rgb += min(PositivePow(meta.rgb, unity_OneOverOutputBoost), unity_MaxOutputValue);
 	}
-	else if (unity_MetaFragmentControl.y) {//自发光光照是通过单独的通道进行烘焙的，材质面板的“全局光照”设为baked的，会另外执行一次自发光的烘焙
-		meta = float4(GetEmission(input.baseUV), 1.0);
+	else if (unity_MetaFragmentControl.y) {//自发光光照是通过单独的通道进行烘焙的，材质面板的"全局光照"设为baked的，会另外执行一次自发光的烘焙
+		meta = float4(GetEmission(config), 1.0);
 	}
 	return meta;
 }
