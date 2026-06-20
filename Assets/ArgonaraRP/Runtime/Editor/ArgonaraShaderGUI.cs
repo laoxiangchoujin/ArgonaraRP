@@ -1,6 +1,7 @@
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
+using System.Collections.Generic;
 
 //自定义Shader GUI类
 public class ArgonaraShaderGUI : ShaderGUI
@@ -14,10 +15,11 @@ public class ArgonaraShaderGUI : ShaderGUI
     {
         EditorGUI.BeginChangeCheck();
         
-        base.OnGUI(materialEditor, properties);//首先获取GUI面板
         editor = materialEditor;
         materials = editor.targets;//从通用类editor的target获取材质
         this.properties = properties;
+
+        base.OnGUI(materialEditor, FilterHiddenProperties(properties));//首先获取GUI面板，并过滤隐藏的属性
         
         BakedEmission();
 
@@ -35,6 +37,24 @@ public class ArgonaraShaderGUI : ShaderGUI
             SetShadowCasterPass();
             CopyLightMappingProperties();
         }
+    }
+
+    MaterialProperty[] FilterHiddenProperties(MaterialProperty[] props)
+    {
+        var filtered = new List<MaterialProperty>();
+        bool maskOn = FindProperty("_MaskMapToggle", props, false)?.floatValue > 0;
+        bool normalOn = FindProperty("_NormalMapToggle", props, false)?.floatValue > 0;
+        bool detailOn = FindProperty("_DetailMapToggle", props, false)?.floatValue > 0;
+
+        foreach (var p in props)
+        {
+            if (!maskOn && p.name == "_MaskMap") continue;
+            if (!normalOn && (p.name == "_NormalMap" || p.name == "_NormalScale")) continue;
+            if (!detailOn && (p.name == "_DetailMap" || p.name == "_DetailAlbedo" ||
+                p.name == "_DetailSmoothness" || p.name == "_DetailNormalMap" || p.name == "_DetailNormalScale")) continue;
+            filtered.Add(p);
+        }
+        return filtered.ToArray();
     }
 
     ///设置float属性
@@ -88,7 +108,7 @@ public class ArgonaraShaderGUI : ShaderGUI
     }
     
     /*
-    这个是传统写法，效果上跟那个“=>”一样的
+    这个是传统写法，效果上跟那个"=>"一样的
     bool Clipping
     {
         set
@@ -238,7 +258,7 @@ public class ArgonaraShaderGUI : ShaderGUI
         }
     }
 
-    ///用于显示一个“全局光照”的菜单，实际只影响自发光的烘焙，也就是unity_MetaFragmentControl.y
+    ///用于显示一个"全局光照"的菜单，实际只影响自发光的烘焙，也就是unity_MetaFragmentControl.y
     void BakedEmission()
     {
         EditorGUI.BeginChangeCheck();

@@ -105,6 +105,21 @@ public class Shadows
 		return new Vector4(0f, 0f, 0f, -1f);//当光源不用shadow mask时，将索引设为 -1
 	}
 
+	public Vector4 ReserveOtherShadows(Light light, int visibleLightIndex)
+	{
+		if (light.shadows != LightShadows.None && light.shadowStrength > 0)
+		{
+			LightBakingOutput lightBaking = light.bakingOutput;
+			if (lightBaking.lightmapBakeType == LightmapBakeType.Mixed &&
+			    lightBaking.mixedLightingMode == MixedLightingMode.Shadowmask)//在mixed+shadowmask模式下，为其他光源设置阴影
+			{
+				useShadowMask = true;
+				return new Vector4(light.shadowStrength, 0f, 0f, lightBaking.occlusionMaskChannel);
+			}
+		}
+		return new Vector4(0f, 0f, 0f, -1f);
+	}
+
 	///渲染阴影
 	public void Render()
 	{

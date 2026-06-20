@@ -5,13 +5,13 @@ using UnityEngine.Rendering;
 public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPipeline>
 {
     [SerializeField]
-    bool useDynamicBatching = true, useGPUInstancing = true, useSRPBatcher = true;
+    bool useDynamicBatching = true, useGPUInstancing = true, useSRPBatcher = true, useLightsPerObject = true;
     
     [SerializeField]
     ShadowSettings shadows = default;
     
     protected override RenderPipeline CreatePipeline()
     {
-        return new ArgonaraRenderPipeline(useDynamicBatching, useGPUInstancing, useSRPBatcher, shadows);
+        return new ArgonaraRenderPipeline(useDynamicBatching, useGPUInstancing, useSRPBatcher, useLightsPerObject, shadows);
     }
 }

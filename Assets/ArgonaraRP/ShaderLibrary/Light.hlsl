@@ -2,12 +2,21 @@
 #define CUSTOM_LIGHT_INCLUDED
 
 #define MAX_DIRECTIONAL_LIGHT_COUNT 4
+#define MAX_OTHER_LIGHT_COUNT 64
 
 CBUFFER_START(_CustomLight)
     int _DirectionalLightCount;
     float4 _DirectionalLightColors[MAX_DIRECTIONAL_LIGHT_COUNT];
     float4 _DirectionalLightDirections[MAX_DIRECTIONAL_LIGHT_COUNT];
     float4 _DirectionalLightShadowData[MAX_DIRECTIONAL_LIGHT_COUNT];//阴影数据，实际上是float2，x是阴影强度，y是atlas上的某个灯的起始tile位置
+
+    //点光源、聚光灯
+    int _OtherLightCount;
+    float4 _OtherLightColors[MAX_OTHER_LIGHT_COUNT];
+    float4 _OtherLightPositions[MAX_OTHER_LIGHT_COUNT];
+    float4 _OtherLightDirections[MAX_OTHER_LIGHT_COUNT];//聚光灯需要方向
+    float4 _OtherLightSpotAngles[MAX_OTHER_LIGHT_COUNT];
+    float4 _OtherLightShadowData[MAX_OTHER_LIGHT_COUNT];
 CBUFFER_END
 
 struct Light {//就是平行光
@@ -19,6 +28,10 @@ struct Light {//就是平行光
 int GetDirectionalLightCount()
 {
     return _DirectionalLightCount;
+}
+
+int GetOtherLightCount () {
+    return _OtherLightCount;
 }
 
 ///获取定向光的阴影数据，有阴影强度和在atlas上的index
@@ -40,6 +53,30 @@ Light GetDirectionalLight (int index, Surface surfaceWS, ShadowData shadowData)/
     DirectionalShadowData dirShadowData = GetDirectionalShadowData(index, shadowData);
     light.attenuation = GetDirectionalShadowAttenuation(dirShadowData, shadowData, surfaceWS);
     //light.attenuation = shadowData.cascadeIndex * 0.25;//cascade级别的一个可视化，越近越黑，在四个灯的情况下，它按理说最远也就是cascade3，亮度为0.75
+    return light;
+}
+
+//----------点光源、聚光灯----------//
+OtherShadowData GetOtherShadowData (int lightIndex) {
+    OtherShadowData data;
+    data.strength = _OtherLightShadowData[lightIndex].x;
+    data.shadowMaskChannel = _OtherLightShadowData[lightIndex].w;
+    return data;
+}
+
+Light GetOtherLight (int index, Surface surfaceWS, ShadowData shadowData) {
+    Light light;
+    light.color = _OtherLightColors[index].rgb;
+    float3 ray = _OtherLightPositions[index].xyz - surfaceWS.position;//依旧指向光源
+    light.direction = normalize(ray);
+    float distanceSqr = max(dot(ray, ray), 0.00001);
+    float rangeAttenuation = Square(saturate(1.0 - Square(distanceSqr * _OtherLightPositions[index].w)));//urp在用的Range attenuation curve，光强随距离曲线衰减
+    
+    //float spotAttenuation =saturate(dot(_OtherLightDirections[index].xyz, light.direction));//聚光灯，保证只有灯正面有光
+    float4 spotAngles = _OtherLightSpotAngles[index];
+    float spotAttenuation = Square(saturate(dot(_OtherLightDirections[index].xyz, light.direction) * spotAngles.x + spotAngles.y));//点光源的spotAngles值让它不受聚光衰减
+    OtherShadowData otherShadowData = GetOtherShadowData(index);
+    light.attenuation = GetOtherShadowAttenuation(otherShadowData, shadowData, surfaceWS) * spotAttenuation * rangeAttenuation / distanceSqr;
     return light;
 }
 

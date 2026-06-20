@@ -51,8 +51,8 @@ float SampleDirectionalShadowAtlas (float3 positionSTS) {//这个STS大概是sha
 //是否用了Shadow Mask模式来烘焙阴影的一些信息
 struct ShadowMask
 {
-    bool always;
-    bool distance;//是否是，“DISTANCE”的类型
+    bool always;//是否是，“shadow mask”的类型
+    bool distance;//是否是，“DISTANCE shadow mask”的类型
     float4 shadows;
 };
 
@@ -219,6 +219,28 @@ ShadowData GetShadowData (Surface surfaceWS)
     return data;
 }
 
+//------点光源和聚光灯--------//
 
+struct OtherShadowData {
+    float strength;//目前是，只要阴影强度为正，就调用已烘焙的shadow
+    int shadowMaskChannel;
+};
+
+float GetOtherShadowAttenuation (
+    OtherShadowData other, ShadowData global, Surface surfaceWS
+) {
+    #if !defined(_RECEIVE_SHADOWS)
+    return 1.0;
+    #endif
+	
+    float shadow;
+    if (other.strength > 0.0) {
+        shadow = GetBakedShadow(global.shadowMask, other.shadowMaskChannel, other.strength);
+    }
+    else {
+        shadow = 1.0;
+    }
+    return shadow;
+}
 
 #endif

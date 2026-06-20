@@ -21,6 +21,19 @@ float3 GetLighting (Surface surfaceWS, BRDF brdf, GI gi) {
         Light light = GetDirectionalLight(i, surfaceWS, shadowData);
         color += GetLighting(surfaceWS, brdf, light);//一个参数的，用直接光，调用两个参数的ver
     }
+    #if defined(_LIGHTS_PER_OBJECT)//点光源、聚光灯的逐物体光照
+        for (int j = 0; j < min(unity_LightData.y, 8); j++) {//unity_LightData.y是影响本物体的点光/聚光数量，unity设定最大是八个光索引，so单物体最多循环8次
+            int lightIndex = unity_LightIndices[(uint)j / 4][(uint)j % 4];//unity_LightIndices，2个float4，压入最多8个灯号，j/4选向量，j%4选分量
+            Light light = GetOtherLight(lightIndex, surfaceWS, shadowData);
+            color += GetLighting(surfaceWS, brdf, light);
+            //return unity_LightData.y/8;
+        }
+    #else
+        for (int j = 0; j < GetOtherLightCount(); j++) {
+            Light light = GetOtherLight(j, surfaceWS, shadowData);
+            color += GetLighting(surfaceWS, brdf, light);
+        }
+    #endif
     return color;
 }
 
