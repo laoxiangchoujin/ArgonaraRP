@@ -60,5 +60,16 @@ public class ShadowSettings
         PCF2x2, PCF3x3, PCF5x5, PCF7x7
     }
 
-    
+    [System.Serializable]
+    public struct Other
+    {
+        public TextureSize atlasSize;
+        public FilterMode filter;
+    }
+
+    public Other other = new Other
+    {
+        atlasSize = TextureSize._1024,
+        filter = FilterMode.PCF2x2
+    };
 }

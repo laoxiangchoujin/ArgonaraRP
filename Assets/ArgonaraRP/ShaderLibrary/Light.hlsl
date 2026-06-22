@@ -60,22 +60,32 @@ Light GetDirectionalLight (int index, Surface surfaceWS, ShadowData shadowData)/
 OtherShadowData GetOtherShadowData (int lightIndex) {
     OtherShadowData data;
     data.strength = _OtherLightShadowData[lightIndex].x;
+    data.tileIndex = _OtherLightShadowData[lightIndex].y;
     data.shadowMaskChannel = _OtherLightShadowData[lightIndex].w;
+    data.isPoint = _OtherLightShadowData[lightIndex].z == 1.0;
+    data.lightPositionWS = 0.0;
+    data.lightDirectionWS = 0.0;
+    data.spotDirectionWS = 0.0;
     return data;
 }
 
 Light GetOtherLight (int index, Surface surfaceWS, ShadowData shadowData) {
     Light light;
     light.color = _OtherLightColors[index].rgb;
-    float3 ray = _OtherLightPositions[index].xyz - surfaceWS.position;//依旧指向光源
+    float3 position = _OtherLightPositions[index].xyz;
+    float3 ray = position - surfaceWS.position;//依旧指向光源
     light.direction = normalize(ray);
     float distanceSqr = max(dot(ray, ray), 0.00001);
     float rangeAttenuation = Square(saturate(1.0 - Square(distanceSqr * _OtherLightPositions[index].w)));//urp在用的Range attenuation curve，光强随距离曲线衰减
     
     //float spotAttenuation =saturate(dot(_OtherLightDirections[index].xyz, light.direction));//聚光灯，保证只有灯正面有光
     float4 spotAngles = _OtherLightSpotAngles[index];
-    float spotAttenuation = Square(saturate(dot(_OtherLightDirections[index].xyz, light.direction) * spotAngles.x + spotAngles.y));//点光源的spotAngles值让它不受聚光衰减
+    float3 spotDirection = _OtherLightDirections[index].xyz;
+    float spotAttenuation = Square(saturate(dot(spotDirection, light.direction) * spotAngles.x + spotAngles.y));//点光源的spotAngles值让它不受聚光衰减
     OtherShadowData otherShadowData = GetOtherShadowData(index);
+    otherShadowData.lightPositionWS = position;
+    otherShadowData.lightDirectionWS = light.direction;
+    otherShadowData.spotDirectionWS = spotDirection;
     light.attenuation = GetOtherShadowAttenuation(otherShadowData, shadowData, surfaceWS) * spotAttenuation * rangeAttenuation / distanceSqr;
     return light;
 }

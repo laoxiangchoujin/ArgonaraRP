@@ -14,6 +14,8 @@ struct Varyings
     UNITY_VERTEX_INPUT_INSTANCE_ID
 };
 
+bool _ShadowPancaking;
+
 Varyings ShadowCasterPassVertex(Attributes input)// : SV_Position
 {
     Varyings output;
@@ -22,17 +24,20 @@ Varyings ShadowCasterPassVertex(Attributes input)// : SV_Position
     float3 positionWS = TransformObjectToWorld(input.positionOS);
     output.positionCS = TransformWorldToHClip(positionWS);
     
-    //不太清楚是什么代码在哪做的，但是在渲染定向光的shadow caster的时候，会把近裁剪平面朝靠近shadow caser的方向移动
-    //是为了增加深度精度，但是，对于不在相机视野内的物体，可能已经在近平面后边了，被错误的裁剪掉了
-    //把它HCS的顶点摊平，统一压到不会在近平面后边，这叫shadow pancaking阴影摊平
-    #if UNITY_REVERSED_Z
+    if (_ShadowPancaking)//用全局bool区分，透视投影的shadow caster不用这个
+    {
+        //不太清楚是什么代码在哪做的，但是在渲染定向光的shadow caster的时候，会把近裁剪平面朝靠近shadow caster的方向移动
+        //是为了增加深度精度，但是，对于不在相机视野内的物体，可能已经在近平面后边了，被错误的裁剪掉了
+        //把它HCS的顶点摊平，统一压到不会在近平面后边，这叫shadow pancaking阴影摊平
+        #if UNITY_REVERSED_Z
         output.positionCS.z = min(output.positionCS.z, output.positionCS.w * UNITY_NEAR_CLIP_VALUE);
-    #else
+        #else
         output.positionCS.z =max(output.positionCS.z, output.positionCS.w * UNITY_NEAR_CLIP_VALUE);//opengl没reverse z，1表示深度大，只要深度比near更大就行
-    #endif
-    //↑上边的方法，适用于"完全在近平面前边/完全在它后边的几何"
-    //对于一个跨越了近平面的三角形，例如俩顶点在near前，一个在near后，这样做就会导致这个三角形投射的阴影变形，尤其是很大的如此的三角形，那会很明显
-    
+        #endif
+        //↑上边的方法，适用于"完全在近平面前边/完全在它后边的几何"
+        //对于一个跨越了近平面的三角形，例如俩顶点在near前，一个在near后，这样做就会导致这个三角形投射的阴影变形，尤其是很大的如此的三角形，那会很明显
+    }
+        
     output.baseUV = TransformBaseUV(input.baseUV);
     return output;
 }
