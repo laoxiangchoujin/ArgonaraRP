@@ -8,10 +8,12 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
     bool useLightsPerObject;
     
     ShadowSettings shadowSettings;
+
+    PostFXSettings postFXSettings;
     
     //构造函数
     public ArgonaraRenderPipeline(bool useDynamicBatching, bool useGPUInstancing, bool useSRPBatcher,
-        bool useLightsPerObject, ShadowSettings shadowSettings)
+        bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings)
     {
         this.useDynamicBatching = useDynamicBatching;
         this.useGPUInstancing = useGPUInstancing;
@@ -19,6 +21,7 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
         GraphicsSettings.lightsUseLinearIntensity = true;//确保灯光颜色都是线性空间
         this.useLightsPerObject = useLightsPerObject;
         this.shadowSettings = shadowSettings;
+        this.postFXSettings = postFXSettings;
 
         InitializeForEditor();
     }
@@ -29,7 +32,9 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
     {
         foreach (Camera camera in cameras)
         {
-            renderer.Render(context, camera, useDynamicBatching, useGPUInstancing, useLightsPerObject, shadowSettings);
+            renderer.Render(context, camera, 
+                useDynamicBatching, useGPUInstancing, useLightsPerObject, 
+                shadowSettings, postFXSettings);
         }
     }
 }

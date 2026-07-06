@@ -36,7 +36,7 @@ CBUFFER_END
 
 float3 _WorldSpaceCameraPos;//像是这个变量，就应该是全局而非是逐物体的，就得移出CBuffer
 
-
+float4 _ProjectionParams;
 
 float4x4 unity_MatrixVP;
 float4x4 unity_MatrixV;

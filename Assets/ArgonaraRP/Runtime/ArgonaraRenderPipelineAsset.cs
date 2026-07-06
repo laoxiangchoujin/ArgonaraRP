@@ -10,8 +10,12 @@ public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPip
     [SerializeField]
     ShadowSettings shadows = default;
     
+    [SerializeField]
+    PostFXSettings postFXSettings = default;
+    
     protected override RenderPipeline CreatePipeline()
     {
-        return new ArgonaraRenderPipeline(useDynamicBatching, useGPUInstancing, useSRPBatcher, useLightsPerObject, shadows);
+        return new ArgonaraRenderPipeline(useDynamicBatching, useGPUInstancing, useSRPBatcher, 
+            useLightsPerObject, shadows, postFXSettings);
     }
 }

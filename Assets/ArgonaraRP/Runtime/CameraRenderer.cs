@@ -19,9 +19,11 @@ public partial class CameraRenderer
 
     Lighting lighting = new Lighting();
     
+    PostFXStack postFXStack = new PostFXStack();//堆栈实例
+    
     ///绘制相机能看到的所有几何图形
     public void Render(ScriptableRenderContext context, Camera camera, bool useDynamicBatching,
-        bool useGPUInsancing, bool useLightsPerObject, ShadowSettings shadowSettings)
+        bool useGPUInsancing, bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings)
     {
         this.context = context;
         this.camera = camera;
@@ -37,14 +39,25 @@ public partial class CameraRenderer
         buffer.BeginSample(SampleName);
         ExecuteBuffer();
         lighting.Setup(context, cullingResults, shadowSettings, useLightsPerObject);//在绘制可见物体前，先设置场景照明，传入相机的裁剪结果（可见范围）
+        postFXStack.Setup(context, camera, postFXSettings);//为什么后处理堆栈放这里？
         buffer.EndSample(SampleName);
         
-        Setup();//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程
+        Setup();//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程   //第二个beginSample
         DrawVisibleGeometry(useDynamicBatching, useGPUInsancing, useLightsPerObject);
         DrawUnsupportedShaders();
-        DrawGizmos();
-        lighting.Cleanup();//在提交之前，清空shadowmap
-        Submit();
+        
+        //lighting.Cleanup();//在提交之前，清空shadowmap
+
+        DrawGizmosBeforeFX();//gizmos要区分在后处理前后有不一样
+        if (postFXStack.IsActive)
+        {
+            postFXStack.Render(frameBufferId);//后处理确实在后边啊
+        }
+        DrawGizmosAfterFX();//这部分gizmos，在后处理后，此时它始终不被物体遮挡，好像是因为没有场景深度了，没法做深度测试
+        
+        Cleanup();
+        
+        Submit(); //第二个endSample
     }
 
     CullingResults cullingResults;
@@ -60,12 +73,27 @@ public partial class CameraRenderer
         }
         return false;
     }
+
+    //相机帧缓冲纹理的id
+    private static int frameBufferId = Shader.PropertyToID("_CameraFrameBuffer");
     
     ///将相机的属性应用于上下文context
     void Setup()
     {
         context.SetupCameraProperties(camera); //渲染前设置正确的相机矩阵unity_MatrixVP
         CameraClearFlags flags = camera.clearFlags;//它有4个值，1~4是Skybox,Color,Depth,Nothing，
+
+        if (postFXStack.IsActive)//若要执行FX堆栈，则需要获取帧缓冲
+        {
+            if (flags > CameraClearFlags.Color)//color是2，只清depth或什么都不清是3或4
+            {
+                flags = CameraClearFlags.Color;//这个相机如果只清深度，或什么都不清，如果要应用后处理，就得把颜色和深度都强制清掉
+            }
+            buffer.GetTemporaryRT(frameBufferId,camera.pixelWidth,camera.pixelHeight,32,FilterMode.Bilinear,RenderTextureFormat.Default);
+            //若有后处理启用，把渲染目标设为临时纹理，而非屏幕，所以，DrawVisibleGeometry(),DrawUnsupportedShaders(),DrawGizmosBeforeFX()此时都只画在"_CameraFrameBuffer"上
+            buffer.SetRenderTarget(frameBufferId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
+        }
+        
         buffer.ClearRenderTarget(
             flags < CameraClearFlags.Nothing, //除了清除标识为nothing以外都要清除深度缓冲
             flags <= CameraClearFlags.Color, 
@@ -141,5 +169,13 @@ public partial class CameraRenderer
         context.DrawRenderers(cullingResults,ref drawingSettings, ref filteringSettings);
     }
 
-    
+    ///用于释放申请的纹理等
+    void Cleanup()
+    {
+        lighting.Cleanup();
+        if (postFXStack.IsActive)
+        {
+            buffer.ReleaseTemporaryRT(frameBufferId);
+        }
+    }
 }

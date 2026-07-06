@@ -9,7 +9,11 @@ partial class CameraRenderer
     //这里我们用partial声明分部函数，当编译器找不到partial函数的实现时，会自动删掉所有此函数的调用
     partial void DrawUnsupportedShaders();
 
-    partial void DrawGizmos();
+    //partial void DrawGizmos();
+    ///说是gizmos，在后处理前后渲染是有区别的，，，所以分成两个
+    partial void DrawGizmosBeforeFX();
+
+    partial void DrawGizmosAfterFX();
 
     partial void PrepareForSceneWindow();
 
@@ -50,11 +54,28 @@ partial class CameraRenderer
     }
     
     ///绘制editor gizmos，说是分两部分，图像效果的前后两个
-    partial void DrawGizmos()
+    // partial void DrawGizmos()
+    // {
+    //     if (Handles.ShouldRenderGizmos())
+    //     {
+    //         context.DrawGizmos(camera, GizmoSubset.PreImageEffects);//这里的imageEffects指的是什么？render feature吗？
+    //         context.DrawGizmos(camera, GizmoSubset.PostImageEffects);
+    //     }
+    // }
+
+    partial void DrawGizmosBeforeFX()
     {
         if (Handles.ShouldRenderGizmos())
         {
-            context.DrawGizmos(camera, GizmoSubset.PreImageEffects);//这里的imageEffects指的是什么？render feature吗？
+            context.DrawGizmos(camera, GizmoSubset.PreImageEffects);
+            //context.DrawGizmos(camera, GizmoSubset.PostImageEffects);
+        }
+    }
+
+    partial void DrawGizmosAfterFX()
+    {
+        if (Handles.ShouldRenderGizmos())
+        {
             context.DrawGizmos(camera, GizmoSubset.PostImageEffects);
         }
     }
