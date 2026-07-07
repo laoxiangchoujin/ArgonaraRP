@@ -13,24 +13,33 @@ public partial class PostFXStack
     private Camera camera;
     
     PostFXSettings settings;
+
+    private bool useHDR;
     
     public bool IsActive => settings != null;//如果没有整体的setting，那么整体的Stack就被跳过
 
     enum Pass//要调用对应的shader里的第几个pass
     {
-        BloomCombine,
+        BloomAdd,
         BloomHorizontal,
         BloomPrefilter,
+        BloomPrefilterFireflies,
+        BloomScatter,
+        BloomScatterFinal,
         BloomVertical,
-        Copy
+        Copy,
+        ToneMappingACES,
+        ToneMappingNeutral,
+        ToneMappingReinhard
     }
 
     ///初始化
-    public void Setup(ScriptableRenderContext context, Camera camera, PostFXSettings settings)
+    public void Setup(ScriptableRenderContext context, Camera camera, PostFXSettings settings, bool useHDR)
     {
         this.context = context;
         this.camera = camera;
         this.settings = camera.cameraType <= CameraType.SceneView ? settings : null;//只在特定的相机里渲染，一般就是scene和game，要避免反射探针或材质预览应用上后处理
+        this.useHDR = useHDR;
         ApplySceneViewState();
     }
 
@@ -41,6 +50,7 @@ public partial class PostFXStack
     private int bloomPrefilterId = Shader.PropertyToID("_BloomPrefilter");//Bloom最耗时的是第一次全分辨率HV blur，这里直接跳过第一次，得到未blur的1/2分辨率纹理
     private int bloomThresholdId = Shader.PropertyToID("_BloomThreshold");
     private int bloomIntensityId = Shader.PropertyToID("_BloomIntensity");
+    private int bloomResultId = Shader.PropertyToID("_BloomResult");
     
     ///
     void Draw(RenderTargetIdentifier from, RenderTargetIdentifier to, Pass pass)
@@ -54,9 +64,15 @@ public partial class PostFXStack
     ///执行后处理Stack
     public void Render(int sourceId)
     {
-        //buffer.Blit(sourceId, BuiltinRenderTextureType.CameraTarget);//Blit是把目标纹理每个像素都重写，不会有上一帧的任何残留，所以不需要ClearRenderTarget
-        //Draw(sourceId, BuiltinRenderTextureType.CameraTarget, Pass.Copy);
-        DoBloom(sourceId);
+        if (DoBloom(sourceId))
+        {
+            DoToneMapping(bloomResultId);
+            buffer.ReleaseTemporaryRT(bloomResultId);
+        }
+        else
+        {
+            DoToneMapping(sourceId);
+        }
         context.ExecuteCommandBuffer(buffer);
         buffer.Clear();
     }
@@ -80,18 +96,17 @@ public partial class PostFXStack
     }
 
     ///一定是（水平、竖直、降采样），这样的循环在做，而不能是一次同时做水平+竖直
-    void DoBloom(int sourceId)
+    bool DoBloom(int sourceId)
     {
-        buffer.BeginSample("Bloom");
         PostFXSettings.BloomSettings bloom = settings.Bloom;
         
         int width = camera.pixelWidth / 2, height = camera.pixelHeight / 2;
         if (bloom.maxIterations == 0 || bloom.intensity <= 0f || height < bloom.downscaleLimit * 2 || width < bloom.downscaleLimit * 2)//这的两个”*2“，是配合跳过第一次半分辨率的，金字塔从1/4分辨率开始，则1/2宽高(这里1/2是上边已经除了2)<limit*2也就是1/4宽高<limit，这宽高是int所以不能除
         {
-            Draw(sourceId, BuiltinRenderTextureType.CameraTarget, Pass.Copy);//完全跳过bloom的情况
-            buffer.EndSample("Bloom");
-            return;
+            return false;
         }
+
+        buffer.BeginSample("Bloom");
 
         Vector4 threshold;
         threshold.x = Mathf.GammaToLinearSpace(bloom.threshold);
@@ -101,9 +116,9 @@ public partial class PostFXStack
         threshold.y -= threshold.x;
         buffer.SetGlobalVector(bloomThresholdId, threshold);
         
-        RenderTextureFormat format = RenderTextureFormat.Default;
+        RenderTextureFormat format = useHDR ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default;
         buffer.GetTemporaryRT(bloomPrefilterId, width, height, 0, FilterMode.Bilinear, format);//半分辨率未blur纹理
-        Draw(sourceId, bloomPrefilterId, Pass.BloomPrefilter);//第一次，挑出通过threshod的部分，放进第一次的未blur 1/2分辨率图中
+        Draw(sourceId, bloomPrefilterId, bloom.fadeFireflies ? Pass.BloomPrefilterFireflies : Pass.BloomPrefilter);//第一次，挑出通过threshod的部分，放进第一次的未blur 1/2分辨率图中
         width /= 2;//之后，从1/4分辨率开始Bloom
         height /= 2;
         
@@ -136,7 +151,24 @@ public partial class PostFXStack
 
         buffer.ReleaseTemporaryRT(bloomPrefilterId);//上采样前，已不需要1/2分辨率临时纹理
         buffer.SetGlobalFloat(bloomBucibicUpsamplingId, bloom.bicubicUpsampling ? 1f : 0f);
-        buffer.SetGlobalFloat(bloomIntensityId, 1f);
+        //buffer.SetGlobalFloat(bloomIntensityId, 1f);
+
+        Pass combinePass;//上采样时根据additive和scatter模式切换
+        Pass finalPass;//对additive，就是bloomAdd   对scatter，额外补充scatter阈值造成的低亮度区域亮度损失
+        float finalIntensity;
+        if (bloom.mode == PostFXSettings.BloomSettings.Mode.Additive)
+        {
+            combinePass = finalPass = Pass.BloomAdd;
+            buffer.SetGlobalFloat(bloomIntensityId, 1f);
+            finalIntensity = bloom.intensity;
+        }
+        else
+        {
+            combinePass = Pass.BloomScatter;
+            finalPass = Pass.BloomScatterFinal;
+            buffer.SetGlobalFloat(bloomIntensityId, bloom.scatter);
+            finalIntensity = Mathf.Min(bloom.intensity, 0.95f);//强度大于 1 不适合用于散射光晕，因为这样会增加光线
+        }
         
         if (i > 1)
         {
@@ -150,7 +182,7 @@ public partial class PostFXStack
             for (i -= 1; i > 0; i--)
             {
                 buffer.SetGlobalTexture(fxSource2Id, toId + 1);
-                Draw(fromId, toId, Pass.BloomCombine); //把fromId的纹理和fxSource2Id的纹理，合并到toId上
+                Draw(fromId, toId, combinePass); //把fromId的纹理和fxSource2Id的纹理，合并到toId上
                 buffer.ReleaseTemporaryRT(fromId);
                 buffer.ReleaseTemporaryRT(toId + 1);
                 fromId = toId;
@@ -168,13 +200,24 @@ public partial class PostFXStack
             buffer.ReleaseTemporaryRT(bloomPyramidId);//如果只有1次或0次bloom迭代，就跳过上采样
         }
 
-        buffer.SetGlobalFloat(bloomIntensityId, bloom.intensity);//只有最后传到相机时，用自己设定的intensity，其余时候都是1
+        buffer.SetGlobalFloat(bloomIntensityId, finalIntensity);
         buffer.SetGlobalTexture(fxSource2Id, sourceId);
-        Draw(fromId, BuiltinRenderTextureType.CameraTarget, Pass.BloomCombine);//此时sourceId是fxSource2Id是原本未处理的图，formId是fxSourceId是完全bloom的图，加和到屏幕上
+        buffer.GetTemporaryRT(bloomResultId, camera.pixelWidth, camera.pixelHeight, 0, FilterMode.Bilinear, format);
+        Draw(fromId, bloomResultId, finalPass);//bloom结果先渲染到bloomResult RT，供后续tone mapping使用
         buffer.ReleaseTemporaryRT(fromId);
         buffer.EndSample("Bloom");
+        return true;
     }
+
+    //原来真是一个脚本做完吗
     
-    
+    //色调映射，用于处理HDR颜色，将其转换为LDR颜色     超过1的部分如5的亮度映射到1，暗部几乎不变，是非线性变换
+    //一般toneMapping放在Bloom后边
+    void DoToneMapping(int sourceId)
+    {
+        PostFXSettings.ToneMappingSettings.Mode mode = settings.ToneMapping.mode;
+        Pass pass = mode < 0 ? Pass.Copy : Pass.ToneMappingACES + (int)mode;
+        Draw(sourceId, BuiltinRenderTextureType.CameraTarget, pass);
+    }
     
 }

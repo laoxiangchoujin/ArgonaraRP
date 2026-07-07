@@ -12,12 +12,12 @@ Shader "Hidden/ArgonaraRP/Post FX Stack"//hidden的好像不会在inspector里�
 		ENDHLSL
 		
 		Pass {
-			Name "Bloom Combine"
+			Name "Bloom Add"
 			
 			HLSLPROGRAM
 				#pragma target 3.5
 				#pragma vertex DefaultPassVertex
-				#pragma fragment BloomCombinePassFragment
+				#pragma fragment BloomAddPassFragment
 			ENDHLSL
 		}
 
@@ -42,6 +42,36 @@ Shader "Hidden/ArgonaraRP/Post FX Stack"//hidden的好像不会在inspector里�
 		}
 
 		Pass {
+			Name "Bloom PrefilterFireFlies"
+			
+			HLSLPROGRAM
+				#pragma target 3.5
+				#pragma vertex DefaultPassVertex
+				#pragma fragment BloomPrefilterFirefliesPassFragment
+			ENDHLSL
+		}
+
+		Pass {
+			Name "Bloom Scatter"
+			
+			HLSLPROGRAM
+				#pragma target 3.5
+				#pragma vertex DefaultPassVertex
+				#pragma fragment BloomScatterPassFragment
+			ENDHLSL
+		}
+
+		Pass {
+			Name "Bloom ScatterFinal"
+			
+			HLSLPROGRAM
+				#pragma target 3.5
+				#pragma vertex DefaultPassVertex
+				#pragma fragment BloomScatterFinalPassFragment 
+			ENDHLSL
+		}
+
+		Pass {
 			Name "Bloom Vertical"
 			
 			HLSLPROGRAM
@@ -59,6 +89,41 @@ Shader "Hidden/ArgonaraRP/Post FX Stack"//hidden的好像不会在inspector里�
             #pragma target 3.5
             #pragma vertex DefaultPassVertex
             #pragma fragment CopyPassFragment
+			ENDHLSL
+        }
+
+		//------------------------ToneMapping------------------------//
+
+        Pass
+        {
+            Name "ToneMapping ACES"
+            
+            HLSLPROGRAM
+            #pragma target 3.5
+            #pragma vertex DefaultPassVertex
+            #pragma fragment ToneMappingACESPassFragment
+			ENDHLSL
+        }
+
+        Pass
+        {
+            Name "ToneMapping Neutral"
+            
+            HLSLPROGRAM
+            #pragma target 3.5
+            #pragma vertex DefaultPassVertex
+            #pragma fragment ToneMappingNeutralPassFragment
+			ENDHLSL
+        }
+
+        Pass
+        {
+            Name "ToneMapping Reinhard"
+            
+            HLSLPROGRAM
+            #pragma target 3.5
+            #pragma vertex DefaultPassVertex
+            #pragma fragment ToneMappingReinhardPassFragment
 			ENDHLSL
         }
     }

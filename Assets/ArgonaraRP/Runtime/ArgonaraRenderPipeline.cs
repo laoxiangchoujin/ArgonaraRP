@@ -3,6 +3,7 @@ using UnityEngine.Rendering;
 
 public partial class ArgonaraRenderPipeline : RenderPipeline
 {
+    bool allowHDR;
     bool useDynamicBatching = true;
     bool useGPUInstancing = true;
     bool useLightsPerObject;
@@ -12,9 +13,10 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
     PostFXSettings postFXSettings;
     
     //构造函数
-    public ArgonaraRenderPipeline(bool useDynamicBatching, bool useGPUInstancing, bool useSRPBatcher,
+    public ArgonaraRenderPipeline(bool allowHDR, bool useDynamicBatching, bool useGPUInstancing, bool useSRPBatcher,
         bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings)
     {
+        this.allowHDR = allowHDR;
         this.useDynamicBatching = useDynamicBatching;
         this.useGPUInstancing = useGPUInstancing;
         GraphicsSettings.useScriptableRenderPipelineBatching = useSRPBatcher;//在创建pipeline时(构造函数里)，图像设置启用SRP batching，就能让compatible的shader自动做SRP batching
@@ -32,7 +34,7 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
     {
         foreach (Camera camera in cameras)
         {
-            renderer.Render(context, camera, 
+            renderer.Render(context, camera, allowHDR,
                 useDynamicBatching, useGPUInstancing, useLightsPerObject, 
                 shadowSettings, postFXSettings);
         }

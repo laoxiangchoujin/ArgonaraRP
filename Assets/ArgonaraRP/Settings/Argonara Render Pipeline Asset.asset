@@ -12,6 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b4bd54641cb139d4ea7eac33e6012d52, type: 3}
   m_Name: Argonara Render Pipeline Asset
   m_EditorClassIdentifier: 
+  allowHDR: 1
   useDynamicBatching: 1
   useGPUInstancing: 1
   useSRPBatcher: 1
@@ -31,4 +32,4 @@ MonoBehaviour:
     other:
       atlasSize: 2048
       filter: 3
-  postFXSettings: {fileID: 11400000, guid: 80dc71d8e864e284581e4ac8f8a23efe, type: 2}
+  postFXSettings: {fileID: 0}

@@ -45,8 +45,42 @@ public class PostFXSettings : ScriptableObject
       [Tooltip("阈值过渡宽度，0=硬裁切，越大越柔和")] [Range(0f, 1f)] public float thresholdKnee; //knee是把阈值硬裁切变成软过渡，knee是过渡的宽度，从threshold~threshold+knee之间渐变变化
       
       [Tooltip("Bloom强度，最终叠加的倍率")] [Min(0f)] public float intensity;
+
+      [Tooltip("是否消除HDR点状闪光")]public bool fadeFireflies;
+      
+      
+      public enum Mode {Additive, Scattering}//经典的叠加式 Bloom 和能量守恒散射 Bloom
+
+      [Header("散射模式")]
+      public Mode mode;
+
+      [Range(0.05f, 0.95f)] public float scatter;//scatter模式是将两层blur结果做lerp，那么不能用0或1的值，那没有意义
    }
 
-   [SerializeField] BloomSettings bloom = default;//inspector里实际看到的是这一个，而非下边的public
+   [SerializeField] BloomSettings bloom = new BloomSettings
+   {
+      scatter = 0.7f    //URP、HDRP的默认值
+   }; //inspector里实际看到的是这一个，而非下边的public
    public BloomSettings Bloom => bloom;//这个public，提供一个只读属性，让其他代码不能像普通public一样改
+
+
+
+   [System.Serializable]
+   public struct ToneMappingSettings
+   {
+
+      public enum Mode
+      {
+         None = -1,
+         ACES,
+         Neutral,
+         Reinhard
+      }
+
+      public Mode mode;
+   }
+
+   [SerializeField] ToneMappingSettings toneMapping = default;
+
+   public ToneMappingSettings ToneMapping => toneMapping;
 }

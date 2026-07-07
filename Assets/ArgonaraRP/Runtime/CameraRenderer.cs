@@ -20,10 +20,12 @@ public partial class CameraRenderer
     Lighting lighting = new Lighting();
     
     PostFXStack postFXStack = new PostFXStack();//堆栈实例
+
+    bool useHDR;
     
     ///绘制相机能看到的所有几何图形
-    public void Render(ScriptableRenderContext context, Camera camera, bool useDynamicBatching,
-        bool useGPUInsancing, bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings)
+    public void Render(ScriptableRenderContext context, Camera camera, bool allowHDR,
+        bool useDynamicBatching, bool useGPUInsancing, bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings)
     {
         this.context = context;
         this.camera = camera;
@@ -35,11 +37,13 @@ public partial class CameraRenderer
             return;
         }
         
+        useHDR = allowHDR && camera.allowHDR;
+        
         //如果给lighting一个专门的sample，可以在主相机claer之前，把阴影项嵌套在main camera中
         buffer.BeginSample(SampleName);
         ExecuteBuffer();
         lighting.Setup(context, cullingResults, shadowSettings, useLightsPerObject);//在绘制可见物体前，先设置场景照明，传入相机的裁剪结果（可见范围）
-        postFXStack.Setup(context, camera, postFXSettings);//为什么后处理堆栈放这里？
+        postFXStack.Setup(context, camera, postFXSettings, useHDR);//为什么后处理堆栈放这里？
         buffer.EndSample(SampleName);
         
         Setup();//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程   //第二个beginSample
@@ -89,7 +93,8 @@ public partial class CameraRenderer
             {
                 flags = CameraClearFlags.Color;//这个相机如果只清深度，或什么都不清，如果要应用后处理，就得把颜色和深度都强制清掉
             }
-            buffer.GetTemporaryRT(frameBufferId,camera.pixelWidth,camera.pixelHeight,32,FilterMode.Bilinear,RenderTextureFormat.Default);
+            buffer.GetTemporaryRT(frameBufferId,camera.pixelWidth,camera.pixelHeight, 32, FilterMode.Bilinear, 
+                useHDR ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default);//是否启用HDR只对后处理堆栈有影响，因此在这决定RT的格式
             //若有后处理启用，把渲染目标设为临时纹理，而非屏幕，所以，DrawVisibleGeometry(),DrawUnsupportedShaders(),DrawGizmosBeforeFX()此时都只画在"_CameraFrameBuffer"上
             buffer.SetRenderTarget(frameBufferId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
         }

@@ -5,6 +5,9 @@ using UnityEngine.Rendering;
 public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPipeline>
 {
     [SerializeField]
+    bool allowHDR = true;
+    
+    [SerializeField]
     bool useDynamicBatching = true, useGPUInstancing = true, useSRPBatcher = true, useLightsPerObject = true;
     
     [SerializeField]
@@ -15,7 +18,7 @@ public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPip
     
     protected override RenderPipeline CreatePipeline()
     {
-        return new ArgonaraRenderPipeline(useDynamicBatching, useGPUInstancing, useSRPBatcher, 
+        return new ArgonaraRenderPipeline(allowHDR, useDynamicBatching, useGPUInstancing, useSRPBatcher, 
             useLightsPerObject, shadows, postFXSettings);
     }
 }

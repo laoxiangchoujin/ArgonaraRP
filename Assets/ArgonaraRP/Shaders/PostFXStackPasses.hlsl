@@ -98,7 +98,7 @@ float4 GetSource2(float2 screenUV) {
     return SAMPLE_TEXTURE2D_LOD(_PostFXSource2, sampler_linear_clamp, screenUV, 0);
 }
 
-float4 BloomCombinePassFragment (Varyings input) : SV_TARGET {
+float4 BloomAddPassFragment (Varyings input) : SV_TARGET {
     float3 lowRes;
     if (_BloomBicubicUpsampling) {//双三次，采样次数更多，设为可选项    和URP、HDRP的“高质量光晕”(High Quality Bloom)是同一个东西
         lowRes = GetSourceBicubic(input.screenUV).rgb;//只有累加bloom的lowRes，用双三次采样
@@ -124,8 +124,85 @@ float3 ApplyBloomThreshold (float3 color) {
 }
 
 float4 BloomPrefilterPassFragment (Varyings input) : SV_TARGET {
-    float3 color = ApplyBloomThreshold(GetSource(input.screenUV).rgb);
+    float3 color = ApplyBloomThreshold(GetSource(input.screenUV).rgb);//只获取大于阈值的颜色
     return float4(color, 1.0);
+}
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Color.hlsl"
+//为了避免HDR的少量像素造成的明显闪光，在半分辨率prefilter步骤，先模糊一次    也就是fadeFireFiles    横竖都模糊的
+//3*3 blur，结合1/2降分辨率，可以当作是6*6 blur
+float4 BloomPrefilterFirefliesPassFragment (Varyings input) : SV_TARGET {
+    float3 color = 0.0;
+    float weightSum = 0.0;
+    float2 offsets[] = {
+        float2(0.0, 0.0),
+        float2(-1.0, -1.0), float2(-1.0, 1.0), float2(1.0, -1.0), float2(1.0, 1.0),
+        //float2(-1.0, 0.0), float2(1.0, 0.0), float2(0.0, -1.0), float2(0.0, 1.0)
+    };
+    for (int i = 0; i < 5; i++) {//这里从9个sample到5个，没什么影响
+        float3 c = GetSource(input.screenUV + offsets[i] * GetSourceTexelSize().xy * 2.0).rgb;
+        c = ApplyBloomThreshold(c);
+        float w = 1.0 / (Luminance(c) + 1.0);   //要实现，单个像素的luminance亮度越大，它的权重就越小，也能减轻fireFlies
+        color += c * w;
+        weightSum += w;
+    }
+    color /= weightSum;
+    return float4(color, 1.0);
+}
+
+float4 BloomScatterPassFragment (Varyings input) : SV_TARGET {
+    float3 lowRes;
+    if (_BloomBicubicUpsampling) {//双三次，采样次数更多，设为可选项    和URP、HDRP的“高质量光晕”(High Quality Bloom)是同一个东西
+        lowRes = GetSourceBicubic(input.screenUV).rgb;//只有累加bloom的lowRes，用双三次采样
+    }
+    else {
+        lowRes = GetSource(input.screenUV).rgb;
+    }
+    float3 highRes = GetSource2(input.screenUV).rgb;
+    return float4(lerp(highRes, lowRes, _BloomIntensity), 1.0);
+}
+
+//散射模式下的最后一个pass，用于补齐暗部亮度，尽可能重建原图的亮度，使之不会因为scatter太强使暗部大量变暗
+float4 BloomScatterFinalPassFragment (Varyings input) : SV_TARGET {
+    float3 lowRes;
+    if (_BloomBicubicUpsampling) {
+        lowRes = GetSourceBicubic(input.screenUV).rgb;
+    }
+    else {
+        lowRes = GetSource(input.screenUV).rgb;
+    }
+    float3 highRes = GetSource2(input.screenUV).rgb;
+    lowRes += highRes - ApplyBloomThreshold(highRes);//+=的部分是，（高分辨率原图-高分原图的高亮部分），也就是暗部
+    return float4(lerp(highRes, lowRes, _BloomIntensity), 1.0);
+}
+
+
+
+//----------------ToneMapping-----------------//
+
+//学院色彩编码系统，行业标准，需先转换到ACES色彩空间再映射
+float4 ToneMappingACESPassFragment (Varyings input) : SV_TARGET {
+    float4 color = GetSource(input.screenUV);
+    color.rgb = min(color.rgb, 60.0);//做个安全性控制，防止太大太大的数出错
+    color.rgb = AcesTonemap(unity_to_ACES(color.rgb));//sRGB/Rec.709 和 ACES 的 RGB 三原色定义不同。unity_to_ACES 是把 Unity 默认的 Rec.709 原色坐标映射到 ACES 的广色域原色坐标，这样 AcesTonemap 才能在正确的色彩空间里计算
+    return color;
+}
+
+//中性色调映射，Uncharted 2风格的S曲线，有趾部+线性段+肩部，能保留更多暗部和亮部细节
+float4 ToneMappingNeutralPassFragment (Varyings input) : SV_TARGET {
+    float4 color = GetSource(input.screenUV);
+    color.rgb = min(color.rgb, 60.0);//做个安全性控制，防止太大太大的数出错
+    color.rgb = NeutralTonemap(color.rgb);
+    return color;
+}
+
+//色调映射：HDR→LDR，Reinhard公式简单压暗超亮区域
+//莱因哈特 Reinhard   x = x / (x + 1)
+float4 ToneMappingReinhardPassFragment (Varyings input) : SV_TARGET {
+    float4 color = GetSource(input.screenUV);
+    color.rgb = min(color.rgb, 60.0);//做个安全性控制，防止太大太大的数出错
+    color.rgb /= color.rgb + 1.0;
+    return color;
 }
 
 #endif
