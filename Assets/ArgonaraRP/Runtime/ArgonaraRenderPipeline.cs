@@ -12,9 +12,11 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
 
     PostFXSettings postFXSettings;
     
+    int colorLUTResolution;
+    
     //构造函数
     public ArgonaraRenderPipeline(bool allowHDR, bool useDynamicBatching, bool useGPUInstancing, bool useSRPBatcher,
-        bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings)
+        bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings, int colorLUTResolution)
     {
         this.allowHDR = allowHDR;
         this.useDynamicBatching = useDynamicBatching;
@@ -24,6 +26,7 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
         this.useLightsPerObject = useLightsPerObject;
         this.shadowSettings = shadowSettings;
         this.postFXSettings = postFXSettings;
+        this.colorLUTResolution = colorLUTResolution;
 
         InitializeForEditor();
     }
@@ -36,7 +39,7 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
         {
             renderer.Render(context, camera, allowHDR,
                 useDynamicBatching, useGPUInstancing, useLightsPerObject, 
-                shadowSettings, postFXSettings);
+                shadowSettings, postFXSettings, colorLUTResolution);
         }
     }
 }

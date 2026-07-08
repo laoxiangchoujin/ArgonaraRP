@@ -96,6 +96,17 @@ Shader "Hidden/ArgonaraRP/Post FX Stack"//hidden的好像不会在inspector里�
 
         Pass
         {
+            Name "ToneMapping None"
+            
+            HLSLPROGRAM
+            #pragma target 3.5
+            #pragma vertex DefaultPassVertex
+            #pragma fragment ToneMappingNonePassFragment
+			ENDHLSL
+        }
+
+        Pass
+        {
             Name "ToneMapping ACES"
             
             HLSLPROGRAM
@@ -124,6 +135,17 @@ Shader "Hidden/ArgonaraRP/Post FX Stack"//hidden的好像不会在inspector里�
             #pragma target 3.5
             #pragma vertex DefaultPassVertex
             #pragma fragment ToneMappingReinhardPassFragment
+			ENDHLSL
+        }
+
+		Pass
+        {
+            Name "LUT Final"
+            
+            HLSLPROGRAM
+            #pragma target 3.5
+            #pragma vertex DefaultPassVertex
+            #pragma fragment FinalPassFragment
 			ENDHLSL
         }
     }

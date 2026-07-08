@@ -25,9 +25,8 @@ public class PostFXSettings : ScriptableObject
    }
    
    
-   //以下为bloom相关代码
-
-
+   //-----------------bloom-------------------//
+   
    [System.Serializable]
    public struct BloomSettings
    {
@@ -64,6 +63,120 @@ public class PostFXSettings : ScriptableObject
    public BloomSettings Bloom => bloom;//这个public，提供一个只读属性，让其他代码不能像普通public一样改
 
 
+   //-----------------Color Adjustments-------------------//
+
+   [System.Serializable]
+   public struct ColorAdjustmentsSettings
+   {
+      public float postExposure;
+
+      [Range(-100f, 100f)] public float contrast;
+
+      [ColorUsage(false, true)] public Color colorFilter;
+
+      [Range(-180f, 180f)] public float hueShift;
+
+      [Range(-100f, 100f)] public float saturation;
+   }
+
+   [SerializeField] ColorAdjustmentsSettings colorAdjustments = new ColorAdjustmentsSettings
+   {
+      colorFilter = Color.white//调色的默认值全0，且这个是白色，就不会更改图像
+   };
+
+   public ColorAdjustmentsSettings ColorAdjustments => colorAdjustments;
+
+
+
+   //-----------------White Balance-------------------//
+
+   [System.Serializable]
+   public struct WhiteBalanceSettings
+   {
+
+      [Range(-100f, 100f)] public float temperature;//色温，低温变蓝，高温变橙黄     模拟黑体辐射从冷到热   通常用较小值
+      [Range(-100f, 100f)] public float tint;//补偿不希望的色彩平衡，低值变绿，高值变品红    真实光源不会完美落在黑体曲线上，如荧光灯偏绿，它补正这个色调偏移
+   }
+
+   [SerializeField] WhiteBalanceSettings whiteBalance = default;
+
+   public WhiteBalanceSettings WhiteBalance => whiteBalance;
+
+
+   //-----------------Split Toning-------------------//
+   //色调分离，针对亮度上的暗部和亮部，分别用Adobe的柔光混合模式染色
+   [System.Serializable]
+   public struct SplitToningSettings
+   {
+
+      [ColorUsage(false)]
+      public Color shadows, highlights;//阴影和高光分别调色，默认灰色即无影响
+
+      [Range(-100f, 100f)]
+      public float balance;//控制阴影/高光的过渡点，>0则更多像素视为高光
+   }
+
+   [SerializeField]
+   SplitToningSettings splitToning = new SplitToningSettings
+   {
+      shadows = Color.gray,
+      highlights = Color.gray
+   };
+
+   public SplitToningSettings SplitToning => splitToning;
+
+
+   //-----------------Channel Mixer-------------------//
+
+   [System.Serializable]
+   public struct ChannelMixerSettings
+   {
+
+      public Vector3 red, green, blue;//3×3矩阵，行=输出色，列=RGB输入，默认单位矩阵即无修改
+   }
+
+   [SerializeField]
+   ChannelMixerSettings channelMixer = new ChannelMixerSettings
+   {
+      red = Vector3.right,   // (1,0,0) 输出红只取输入红
+      green = Vector3.up,    // (0,1,0)
+      blue = Vector3.forward // (0,0,1)
+   };
+
+   public ChannelMixerSettings ChannelMixer => channelMixer;
+
+
+   //-----------------Shadows Midtones Highlights-------------------//
+   //中文叫啥？，，，对亮度上的暗部、灰部、亮部，分别做乘法混合，和色调混合类似，但是控制会更精准
+   [System.Serializable]
+   public struct ShadowsMidtonesHighlightsSettings
+   {
+
+      [ColorUsage(false, true)]//因为是乘法混合，要想亮部更亮，就需要hdr颜色
+      public Color shadows, midtones, highlights;//三段独立染色，默认白色=无影响，HDR可>1提亮
+
+      [Range(0f, 2f)]
+      public float shadowsStart, shadowsEnd, highlightsStart, highLightsEnd;//阴影/高光的过渡起止范围
+   }
+
+   [SerializeField]
+   ShadowsMidtonesHighlightsSettings
+      shadowsMidtonesHighlights = new ShadowsMidtonesHighlightsSettings {
+         shadows = Color.white,
+         midtones = Color.white,
+         highlights = Color.white,
+         shadowsEnd = 0.3f,
+         highlightsStart = 0.55f,
+         highLightsEnd = 1f
+      };
+
+   public ShadowsMidtonesHighlightsSettings ShadowsMidtonesHighlights =>
+      shadowsMidtonesHighlights;
+   
+   
+   
+
+   //-----------------Tone Mapping-------------------//
 
    [System.Serializable]
    public struct ToneMappingSettings
@@ -71,7 +184,7 @@ public class PostFXSettings : ScriptableObject
 
       public enum Mode
       {
-         None = -1,
+         None,
          ACES,
          Neutral,
          Reinhard

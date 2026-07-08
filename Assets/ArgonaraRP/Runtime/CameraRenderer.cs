@@ -25,7 +25,8 @@ public partial class CameraRenderer
     
     ///绘制相机能看到的所有几何图形
     public void Render(ScriptableRenderContext context, Camera camera, bool allowHDR,
-        bool useDynamicBatching, bool useGPUInsancing, bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings)
+        bool useDynamicBatching, bool useGPUInsancing, bool useLightsPerObject, 
+        ShadowSettings shadowSettings, PostFXSettings postFXSettings, int colorLUTResolution)
     {
         this.context = context;
         this.camera = camera;
@@ -43,7 +44,7 @@ public partial class CameraRenderer
         buffer.BeginSample(SampleName);
         ExecuteBuffer();
         lighting.Setup(context, cullingResults, shadowSettings, useLightsPerObject);//在绘制可见物体前，先设置场景照明，传入相机的裁剪结果（可见范围）
-        postFXStack.Setup(context, camera, postFXSettings, useHDR);//为什么后处理堆栈放这里？
+        postFXStack.Setup(context, camera, postFXSettings, useHDR, colorLUTResolution);//为什么后处理堆栈放这里？
         buffer.EndSample(SampleName);
         
         Setup();//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程   //第二个beginSample

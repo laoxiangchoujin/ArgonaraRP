@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.Rendering;
+using static PostFXSettings;
 
 //这个stack堆栈，是所有后处理效果的总集，里面可以装载很多个render feature。同时，它是PostFXSettings这个数据类的运行时实例
 public partial class PostFXStack
@@ -15,6 +16,8 @@ public partial class PostFXStack
     PostFXSettings settings;
 
     private bool useHDR;
+
+    private int colorLUTResolution;
     
     public bool IsActive => settings != null;//如果没有整体的setting，那么整体的Stack就被跳过
 
@@ -28,18 +31,22 @@ public partial class PostFXStack
         BloomScatterFinal,
         BloomVertical,
         Copy,
-        ToneMappingACES,
-        ToneMappingNeutral,
-        ToneMappingReinhard
+        ColorGradingNone,
+        ColorGradingACES,
+        ColorGradingNeutral,
+        ColorGradingReinhard,
+        Final
     }
 
     ///初始化
-    public void Setup(ScriptableRenderContext context, Camera camera, PostFXSettings settings, bool useHDR)
+    public void Setup(ScriptableRenderContext context, Camera camera, PostFXSettings settings, 
+        bool useHDR, int colorLUTResolution)
     {
         this.context = context;
         this.camera = camera;
         this.settings = camera.cameraType <= CameraType.SceneView ? settings : null;//只在特定的相机里渲染，一般就是scene和game，要避免反射探针或材质预览应用上后处理
         this.useHDR = useHDR;
+        this.colorLUTResolution = colorLUTResolution;
         ApplySceneViewState();
     }
 
@@ -66,12 +73,12 @@ public partial class PostFXStack
     {
         if (DoBloom(sourceId))
         {
-            DoToneMapping(bloomResultId);
+            DoColorGradingAndToneMapping(bloomResultId);
             buffer.ReleaseTemporaryRT(bloomResultId);
         }
         else
         {
-            DoToneMapping(sourceId);
+            DoColorGradingAndToneMapping(sourceId);
         }
         context.ExecuteCommandBuffer(buffer);
         buffer.Clear();
@@ -98,7 +105,7 @@ public partial class PostFXStack
     ///一定是（水平、竖直、降采样），这样的循环在做，而不能是一次同时做水平+竖直
     bool DoBloom(int sourceId)
     {
-        PostFXSettings.BloomSettings bloom = settings.Bloom;
+        BloomSettings bloom = settings.Bloom;
         
         int width = camera.pixelWidth / 2, height = camera.pixelHeight / 2;
         if (bloom.maxIterations == 0 || bloom.intensity <= 0f || height < bloom.downscaleLimit * 2 || width < bloom.downscaleLimit * 2)//这的两个”*2“，是配合跳过第一次半分辨率的，金字塔从1/4分辨率开始，则1/2宽高(这里1/2是上边已经除了2)<limit*2也就是1/4宽高<limit，这宽高是int所以不能除
@@ -156,7 +163,7 @@ public partial class PostFXStack
         Pass combinePass;//上采样时根据additive和scatter模式切换
         Pass finalPass;//对additive，就是bloomAdd   对scatter，额外补充scatter阈值造成的低亮度区域亮度损失
         float finalIntensity;
-        if (bloom.mode == PostFXSettings.BloomSettings.Mode.Additive)
+        if (bloom.mode == BloomSettings.Mode.Additive)
         {
             combinePass = finalPass = Pass.BloomAdd;
             buffer.SetGlobalFloat(bloomIntensityId, 1f);
@@ -209,15 +216,95 @@ public partial class PostFXStack
         return true;
     }
 
-    //原来真是一个脚本做完吗
+    //原来真是一个脚本做完
+
+    private int colorAdjustmentsId = Shader.PropertyToID("_ColorAdjustments");
+    private int colorFilterId = Shader.PropertyToID("_ColorFilter");
+    private int whiteBalanceId = Shader.PropertyToID("_WhiteBalance");
+    private int splitToningShadowsId = Shader.PropertyToID("_SplitToningShadows");
+    private int splitToningHighlightsId = Shader.PropertyToID("_SplitToningHighlights");
+    private int channelMixerRedId = Shader.PropertyToID("_ChannelMixerRed");
+    private int channelMixerGreenId = Shader.PropertyToID("_ChannelMixerGreen");
+    private int channelMixerBlueId = Shader.PropertyToID("_ChannelMixerBlue");
+    private int smhShadowsId = Shader.PropertyToID("_SMHShadows");
+    private int smhMidtonesId = Shader.PropertyToID("_SMHMidtones");
+    private int smhHighlightsId = Shader.PropertyToID("_SMHHighlights");
+    private int smhRangeId = Shader.PropertyToID("_SMHRange");
+    
+    
+    void ConfigureColorAdjustments()
+    {
+        ColorAdjustmentsSettings colorAdjustments = settings.ColorAdjustments;
+        buffer.SetGlobalVector(colorAdjustmentsId, new Vector4(
+            Mathf.Pow(2f, colorAdjustments.postExposure),
+            colorAdjustments.contrast * 0.01f + 1f,
+            colorAdjustments.hueShift * (1f / 360f),
+            colorAdjustments.saturation * 0.01f + 1f));
+        buffer.SetGlobalColor(colorFilterId, colorAdjustments.colorFilter.linear);
+    }
+
+    void ConfigureWhiteBalance()
+    {
+        WhiteBalanceSettings whiteBalance = settings.WhiteBalance;
+        buffer.SetGlobalVector(whiteBalanceId, ColorUtils.ColorBalanceToLMSCoeffs(whiteBalance.temperature, whiteBalance.tint));
+    }
+
+    void ConfigureSplitToning()
+    {
+        SplitToningSettings splitToning = settings.SplitToning;
+        Color splitColor = splitToning.shadows;
+        splitColor.a = splitToning.balance * 0.01f;//把-100~100映射到-1~1，塞进shadows的alpha通道
+        buffer.SetGlobalColor(splitToningShadowsId, splitColor);
+        buffer.SetGlobalColor(splitToningHighlightsId, splitToning.highlights);
+    }
+
+    void ConfigureChannelMixer()
+    {
+        ChannelMixerSettings channelMixer = settings.ChannelMixer;
+        buffer.SetGlobalVector(channelMixerRedId, channelMixer.red);
+        buffer.SetGlobalVector(channelMixerGreenId, channelMixer.green);
+        buffer.SetGlobalVector(channelMixerBlueId, channelMixer.blue);
+    }
+
+    void ConfigureShadowsMidtonesHighlights()
+    {
+        ShadowsMidtonesHighlightsSettings smh = settings.ShadowsMidtonesHighlights;
+        buffer.SetGlobalColor(smhShadowsId, smh.shadows.linear);
+        buffer.SetGlobalColor(smhMidtonesId, smh.midtones.linear);
+        buffer.SetGlobalColor(smhHighlightsId, smh.highlights.linear);
+        buffer.SetGlobalVector(smhRangeId, new Vector4(
+            smh.shadowsStart, smh.shadowsEnd, smh.highlightsStart, smh.highLightsEnd));
+    }
+    
+    int colorGradingLUTId = Shader.PropertyToID("_ColorGradingLUT");
+    int colorGradingLUTParametersId = Shader.PropertyToID("_ColorGradingLUTParameters");
+    int colorGradingLUTInLogC = Shader.PropertyToID("_ColorGradingLUTInLogC");
     
     //色调映射，用于处理HDR颜色，将其转换为LDR颜色     超过1的部分如5的亮度映射到1，暗部几乎不变，是非线性变换
     //一般toneMapping放在Bloom后边
-    void DoToneMapping(int sourceId)
+    //这里同时做颜色分级和色调映射        //正确的色彩处理顺序是，原始HDR、色彩矫正、色彩分级、色调映射(tonemapping)、显示器LDR
+    void DoColorGradingAndToneMapping(int sourceId)
     {
-        PostFXSettings.ToneMappingSettings.Mode mode = settings.ToneMapping.mode;
-        Pass pass = mode < 0 ? Pass.Copy : Pass.ToneMappingACES + (int)mode;
-        Draw(sourceId, BuiltinRenderTextureType.CameraTarget, pass);
+        ConfigureColorAdjustments();
+        ConfigureWhiteBalance();
+        ConfigureSplitToning();
+        ConfigureChannelMixer();
+        ConfigureShadowsMidtonesHighlights();
+        
+        //准备色彩分级和色调映射的LUT
+        int lutHeight = colorLUTResolution;
+        int lutWidth = lutHeight * lutHeight;
+        buffer.GetTemporaryRT(colorGradingLUTId, lutWidth, lutHeight, 0, FilterMode.Bilinear, RenderTextureFormat.DefaultHDR);
+        buffer.SetGlobalVector(colorGradingLUTParametersId, new Vector4(lutHeight, 0.5f / lutWidth, 0.5f / lutHeight, lutHeight / (lutHeight - 1f)));//GetLutStripValue()要求的，写入LUT时的参数
+        
+        ToneMappingSettings.Mode mode = settings.ToneMapping.mode;
+        Pass pass = Pass.ColorGradingNone + (int)mode;
+        buffer.SetGlobalFloat(colorGradingLUTInLogC, useHDR && pass != Pass.ColorGradingNone ? 1f : 0f);
+        Draw(sourceId, colorGradingLUTId, pass);//色彩分级和色调映射画到LUT查找表     这里实际上不需要任何source，但Draw需要一个原纹理，什么都行，只是填上
+        
+        buffer.SetGlobalVector(colorGradingLUTParametersId, new Vector4(1f / lutWidth, 1f / lutHeight, lutHeight - 1f));
+        Draw(sourceId, BuiltinRenderTextureType.CameraTarget, Pass.Final);
+        buffer.ReleaseTemporaryRT(colorGradingLUTId);
     }
     
 }
