@@ -8,6 +8,8 @@ CBUFFER_START(UnityPerDraw)//要让shader兼容SRP batcher，第二，对custom 
     float4 unity_LODFade;
     real4 unity_WorldTransformParams;//世界空间参数，是一些转换信息，，，？
 
+    float4 unity_RenderingLayer;
+
     real4 unity_LightData;//y是逐物体光照的灯光数量，由Unity剔除系统填充
     real4 unity_LightIndices[2];//8个灯光索引（每个float4存4个）       //这两个字段由CameraRenderer中PerObjectData.LightData|LightIndices标志激活
     

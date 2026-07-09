@@ -110,8 +110,8 @@ float4 BloomAddPassFragment (Varyings input) : SV_TARGET {
     else {
         lowRes = GetSource(input.screenUV).rgb;
     }
-    float3 highRes = GetSource2(input.screenUV).rgb;
-    return float4(lowRes * _BloomIntensity + highRes, 1.0);
+    float4 highRes = GetSource2(input.screenUV);
+    return float4(lowRes * _BloomIntensity + highRes.rgb, highRes.a);//Bloom正确使用模糊前的原纹理的alpha
 }
 
 //阈值过滤
@@ -175,9 +175,9 @@ float4 BloomScatterFinalPassFragment (Varyings input) : SV_TARGET {
     else {
         lowRes = GetSource(input.screenUV).rgb;
     }
-    float3 highRes = GetSource2(input.screenUV).rgb;
-    lowRes += highRes - ApplyBloomThreshold(highRes);//+=的部分是，（高分辨率原图-高分原图的高亮部分），也就是暗部
-    return float4(lerp(highRes, lowRes, _BloomIntensity), 1.0);
+    float4 highRes = GetSource2(input.screenUV);
+    lowRes += highRes.rgb - ApplyBloomThreshold(highRes.rgb);//+=的部分是，（高分辨率原图-高分原图的高亮部分），也就是暗部
+    return float4(lerp(highRes.rgb, lowRes, _BloomIntensity), highRes.a);//Bloom正确使用模糊前的原纹理的alpha
 }
 
 

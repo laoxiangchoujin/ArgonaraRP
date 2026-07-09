@@ -38,7 +38,7 @@ float4 UnlitPassFragment(Varyings input) : SV_Target
     #endif
     
     base.rgb += GetEmission(config);
-    return base;
+    return float4(base.rgb, GetFinalAlpha(base.a));//不透明物体强制Alpha=1，保证相机叠加时Alpha值正确
 }
 
 #endif//如果包含了，就跳过

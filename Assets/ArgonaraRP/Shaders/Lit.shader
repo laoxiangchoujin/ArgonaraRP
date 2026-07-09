@@ -63,7 +63,7 @@ Shader "Argonara RP/Lit"
         Pass
         {
             Tags {"LightMode" = "ArgonaraLit"}
-            Blend [_SrcBlend] [_DstBlend]
+            Blend [_SrcBlend] [_DstBlend], One OneMinusSrcAlpha//对透明度额外设置固定的预乘混合模式，这是Alpha合成的标准"over"算子。只有这个公式能保证不管绘制顺序，最终累积的 Alpha 始终 ≤1 且逻辑正确
             ZWrite [_ZWrite]
             
             HLSLPROGRAM

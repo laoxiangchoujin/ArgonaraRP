@@ -22,6 +22,8 @@ public partial class CameraRenderer
     PostFXStack postFXStack = new PostFXStack();//堆栈实例
 
     bool useHDR;
+
+    static CameraSettings defaultCameraSettings = new CameraSettings();//没有挂组件的相机用默认设置
     
     ///绘制相机能看到的所有几何图形
     public void Render(ScriptableRenderContext context, Camera camera, bool allowHDR,
@@ -30,6 +32,14 @@ public partial class CameraRenderer
     {
         this.context = context;
         this.camera = camera;
+
+        var argonaraRPCamera = camera.GetComponent<ArgonaraRenderPipelineCamera>();//尝试在场景里真的存在的Camera相机上，找到我的自定义的，设置相机final pass混合模式的组件    这一步只对PostFx的final pass有影响
+        CameraSettings cameraSettings = argonaraRPCamera ? argonaraRPCamera.Settings : defaultCameraSettings;//没找到就默认One,Zero，，，覆写的要用One,OneMinusSrcAlpha
+
+        if (cameraSettings.overridePostFX)
+        {
+            postFXSettings = cameraSettings.postFXSettings;//相机自己的后处理设置覆盖管线全局设置
+        }
 
         PrepareBuffer();
         PrepareForSceneWindow();//给scene view里的UI物体添加到世界几何体中，因为可能会为场景增加一些几何体，所以要在剔除前做
@@ -43,12 +53,14 @@ public partial class CameraRenderer
         //如果给lighting一个专门的sample，可以在主相机claer之前，把阴影项嵌套在main camera中
         buffer.BeginSample(SampleName);
         ExecuteBuffer();
-        lighting.Setup(context, cullingResults, shadowSettings, useLightsPerObject);//在绘制可见物体前，先设置场景照明，传入相机的裁剪结果（可见范围）
-        postFXStack.Setup(context, camera, postFXSettings, useHDR, colorLUTResolution);//为什么后处理堆栈放这里？
+        lighting.Setup(context, cullingResults, shadowSettings, useLightsPerObject,
+            cameraSettings.maskLights ? cameraSettings.renderingLayerMask : -1);//相机可选的灯光渲染层过滤
+        postFXStack.Setup(context, camera, postFXSettings, useHDR, colorLUTResolution, cameraSettings.finalBlendMode);
         buffer.EndSample(SampleName);
         
         Setup();//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程   //第二个beginSample
-        DrawVisibleGeometry(useDynamicBatching, useGPUInsancing, useLightsPerObject);
+        DrawVisibleGeometry(useDynamicBatching, useGPUInsancing, useLightsPerObject,
+            cameraSettings.renderingLayerMask);
         DrawUnsupportedShaders();
         
         //lighting.Cleanup();//在提交之前，清空shadowmap
@@ -131,7 +143,8 @@ public partial class CameraRenderer
     
     
     ///绘制可见几何体
-    void DrawVisibleGeometry(bool useDynamicBatching, bool useGPUInsancing, bool useLightsPerObject)
+    void DrawVisibleGeometry(bool useDynamicBatching, bool useGPUInsancing, bool useLightsPerObject,
+        int renderingLayerMask)
     {
         PerObjectData lightsPerObjectFlags = useLightsPerObject ? PerObjectData.LightData | PerObjectData.LightIndices : PerObjectData.None;//若启用逐对象光照，则传递逐物体的光照信息和光源索引
         //绘制opaque物体
@@ -143,17 +156,17 @@ public partial class CameraRenderer
         {
             enableDynamicBatching = useDynamicBatching,//开启动态批处理,把材质相同的多个小网格合并成一个大网格，减少drawcalls
             enableInstancing = useGPUInsancing,
-            perObjectData = PerObjectData.ReflectionProbes |//每个对象都要有反射探针
-                            PerObjectData.Lightmaps | //用于把物体的lightmapUV传给shader
+            perObjectData = PerObjectData.ReflectionProbes |
+                            PerObjectData.Lightmaps |
                             PerObjectData.ShadowMask |
                             PerObjectData.LightProbe | 
                             PerObjectData.OcclusionProbe |
                             PerObjectData.LightProbeProxyVolume |
                             PerObjectData.OcclusionProbeProxyVolume |
-                            lightsPerObjectFlags//若启用了逐对象的灯光，GPU 实例化的效率会降低，因为不同物体若灯光不同，容易造成UnityPerDraw CBUFFER 的unity_LightData或unity_LightIndices不同，不能一次实例化，增加drawcall。SRP 合批不受影响
+                            lightsPerObjectFlags
         };
-        drawingSettings.SetShaderPassName(1, litShaderTagId);//启用这个tag的shader，名字确实奇怪，它是维护一个ShaderTagId的表，0是创建时候的tag，unity按照顺序去找匹配的pass
-        var filteringSettings = new FilteringSettings(RenderQueueRange.opaque);//指出哪些render队列是允许的，，，这个是说渲染的quene吗，就是1000，2000那种？
+        drawingSettings.SetShaderPassName(1, litShaderTagId);
+        var filteringSettings = new FilteringSettings(RenderQueueRange.opaque, renderingLayerMask: (uint)renderingLayerMask);
         context.DrawRenderers(cullingResults,ref drawingSettings, ref filteringSettings);
         
         //绘制天空盒，原本是context.DrawSkybox(camera);但说已过时

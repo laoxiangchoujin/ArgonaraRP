@@ -91,6 +91,7 @@ float4 LitPassFragment(Varyings input) : SV_Target
     surface.smoothness = GetSmoothness(config);
     surface.fresnelStrength = GetFresnel(config);
     surface.dither = InterleavedGradientNoise(input.positionCS.xy, 0);
+    surface.renderingLayerMask = asuint(unity_RenderingLayer.x);
     
     #if defined(_PREMULTIPLY_ALPHA)
         BRDF brdf = GetBRDF(surface, true);
@@ -110,7 +111,7 @@ float4 LitPassFragment(Varyings input) : SV_Target
    
     //return GetSmoothness(config);
     
-    return float4(color, surface.alpha);
+    return float4(color, GetFinalAlpha(surface.alpha));//不透明物体强制Alpha=1，保证相机叠加时Alpha值正确
 }
 
 #endif

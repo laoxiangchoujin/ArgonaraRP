@@ -40,13 +40,14 @@ public partial class PostFXStack
 
     ///初始化
     public void Setup(ScriptableRenderContext context, Camera camera, PostFXSettings settings, 
-        bool useHDR, int colorLUTResolution)
+        bool useHDR, int colorLUTResolution, CameraSettings.FinalBlendMode finalBlendMode)
     {
         this.context = context;
         this.camera = camera;
         this.settings = camera.cameraType <= CameraType.SceneView ? settings : null;//只在特定的相机里渲染，一般就是scene和game，要避免反射探针或材质预览应用上后处理
         this.useHDR = useHDR;
         this.colorLUTResolution = colorLUTResolution;
+        this.finalBlendMode = finalBlendMode;
         ApplySceneViewState();
     }
 
@@ -59,13 +60,36 @@ public partial class PostFXStack
     private int bloomIntensityId = Shader.PropertyToID("_BloomIntensity");
     private int bloomResultId = Shader.PropertyToID("_BloomResult");
     
-    ///
+    int finalSrcBlendId = Shader.PropertyToID("_FinalSrcBlend");
+    int finalDstBlendId = Shader.PropertyToID("_FinalDstBlend");
+
+    CameraSettings.FinalBlendMode finalBlendMode;
+    
+    ///从from纹理，用pass，绘制到to纹理
     void Draw(RenderTargetIdentifier from, RenderTargetIdentifier to, Pass pass)
     {
         buffer.SetGlobalTexture(fxSourceId, from);//把from纹理指定到fxSourceId上，，，就是说，之后再用fxSourceId找到的就是这里指定的纹理
         buffer.SetRenderTarget(to, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
         //用DrawProcedural绘制三角形，跟defaultVertexShader匹配，比画quad少一半顶点
         buffer.DrawProcedural(Matrix4x4.identity, settings.Material, (int)pass, MeshTopology.Triangles, 3);
+    }
+
+    static Rect fullViewRect = new Rect(0f, 0f, 1f, 1f);//适配Tile based GPU，如果一个屏幕上显示多个相机的内容，交界处因为tile，可能出现细线的垃圾数据
+    
+    ///假设有两个相机，分别画屏幕的左半右半，那么无后处理时ok的；有后处理的话SetRenderTarget会把绘制区域设为整个屏幕
+    ///所以，有后处理的，最后一次画到屏幕上的绘制，额外调用SetViewport
+    ///实际上不需要特殊的脚本，只要有两个相机，深度设为相同，然后viewPort矩形设置为(0,0)~(0.5,1)和(0.5,0)~(1,1)，就实现分屏了
+    void DrawFinal(RenderTargetIdentifier from)//肯定是用final pass，画到屏幕上的某个rect区域
+    {
+        buffer.SetGlobalFloat(finalSrcBlendId, (float)finalBlendMode.source);
+        buffer.SetGlobalFloat(finalDstBlendId, (float)finalBlendMode.destination);
+        buffer.SetGlobalTexture(fxSourceId, from);
+        buffer.SetRenderTarget(BuiltinRenderTextureType.CameraTarget,
+            finalBlendMode.destination == BlendMode.Zero && camera.rect == fullViewRect ?
+                RenderBufferLoadAction.DontCare : RenderBufferLoadAction.Load, //如果final pass时，混合模式完全不需要看原图长啥样，那就DontCare；需要用原图混合的，就加载一下原图//全屏覆写可跳过加载，分屏或需混合则必须加载已有内容
+            RenderBufferStoreAction.Store);
+        buffer.SetViewport(camera.pixelRect);
+        buffer.DrawProcedural(Matrix4x4.identity, settings.Material, (int)Pass.Final, MeshTopology.Triangles, 3);
     }
     
     ///执行后处理Stack
@@ -303,7 +327,8 @@ public partial class PostFXStack
         Draw(sourceId, colorGradingLUTId, pass);//色彩分级和色调映射画到LUT查找表     这里实际上不需要任何source，但Draw需要一个原纹理，什么都行，只是填上
         
         buffer.SetGlobalVector(colorGradingLUTParametersId, new Vector4(1f / lutWidth, 1f / lutHeight, lutHeight - 1f));
-        Draw(sourceId, BuiltinRenderTextureType.CameraTarget, Pass.Final);
+        //Draw(sourceId, BuiltinRenderTextureType.CameraTarget, Pass.Final);
+        DrawFinal(sourceId);
         buffer.ReleaseTemporaryRT(colorGradingLUTId);
     }
     

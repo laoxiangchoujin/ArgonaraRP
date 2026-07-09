@@ -9,12 +9,12 @@ public class Lighting
 
     static int dirLightCountId = Shader.PropertyToID("_DirectionalLightCount"),
                 dirLightColorsId = Shader.PropertyToID("_DirectionalLightColors"),
-                dirLightDirectionsId = Shader.PropertyToID("_DirectionalLightDirections"),
+                dirLightDirectionsAndMasksId = Shader.PropertyToID("_DirectionalLightDirectionsAndMasks"),
                 dirLightShadowDataId = Shader.PropertyToID("_DirectionalLightShadowData");//x是阴影强度，y是每个定向光的初始tile位置，如4光*4级联，第一个光的这个y是0，第二个光的是4，8，12
     
     static Vector4[] 
         dirLightColors = new Vector4[maxDirLightCount],//也就是四个定向光，总计四个颜色和方向，2*4*Vector4
-        dirLightDirections = new Vector4[maxDirLightCount],//话说为啥不用vector3？
+        dirLightDirectionsAndMasks = new Vector4[maxDirLightCount],//.w存渲染层掩码
         dirLightShadowData = new Vector4[maxDirLightCount];//怎么不是vector2？
     
     
@@ -23,14 +23,14 @@ public class Lighting
         otherLightCountId = Shader.PropertyToID("_OtherLightCount"),
         otherLightColorsId = Shader.PropertyToID("_OtherLightColors"),
         otherLightPositionsId = Shader.PropertyToID("_OtherLightPositions"),
-        otherLightDirectionsId = Shader.PropertyToID("_OtherLightDirections"),//聚光灯需要方向
+        otherLightDirectionsAndMasksId = Shader.PropertyToID("_OtherLightDirectionsAndMasks"),//聚光灯需要方向
         otherLightSpotAnglesId = Shader.PropertyToID("_OtherLightSpotAngles"),//聚光灯聚光角
         otherLightShadowDataId = Shader.PropertyToID("_OtherLightShadowData");
 
     static Vector4[]
         otherLightColors = new Vector4[maxOtherLightCount],
         otherLightPositions = new Vector4[maxOtherLightCount],
-        otherLightDirections = new Vector4[maxOtherLightCount],
+        otherLightDirectionsAndMasks = new Vector4[maxOtherLightCount],
         otherLightSpotAngles = new Vector4[maxOtherLightCount],
         otherLightShadowData = new Vector4[maxOtherLightCount];
     
@@ -46,12 +46,12 @@ public class Lighting
     Shadows shadows = new Shadows();//Lighting管理Shadows的一个实例
     
     public void Setup(ScriptableRenderContext context, CullingResults cullingResults, 
-        ShadowSettings shadowSettings, bool useLightsPerObject)
+        ShadowSettings shadowSettings, bool useLightsPerObject, int renderingLayerMask)
     {
         this.cullingResults = cullingResults;//执行物体剔除的时候，unity会确定哪些灯光会影响相机可见的空间，so需要剔除结果，以更好支持多光源（当然就不只是多个平行光）
         buffer.BeginSample(bufferName);
         shadows.Setup(context, cullingResults, shadowSettings);//调用初始化阴影
-        SetupLights(useLightsPerObject);
+        SetupLights(useLightsPerObject, renderingLayerMask);
         shadows.Render(); //上一行在定义光的时候，看谁要生成阴影，这里渲染
         buffer.EndSample(bufferName);
         context.ExecuteCommandBuffer(buffer);
@@ -60,7 +60,7 @@ public class Lighting
 
     static string lightsPerObjectKeyword = "_LIGHTS_PER_OBJECT";
     
-    void SetupLights(bool useLightsPerObject)
+    void SetupLights(bool useLightsPerObject, int renderingLayerMask)
     {
         NativeArray<int> indexMap = useLightsPerObject ? cullingResults.GetLightIndexMap(Allocator.Temp) : default;//Unity内部所有参与剔除的灯光索引表，包括不可见灯光
         NativeArray<VisibleLight> visibleLights = cullingResults.visibleLights;//可见光，是专门的类型数组
@@ -70,30 +70,33 @@ public class Lighting
         {
             int newIndex = -1;
             VisibleLight visibleLight = visibleLights[i];//这里边获得的光不一定什么类型的，得判断
-            
+            Light light = visibleLight.light;
+            if ((light.renderingLayerMask & renderingLayerMask) != 0)//相机渲染层与灯光层有重叠，该灯光有效
+            {
             switch (visibleLight.lightType)
             {
                 case LightType.Directional:
                     if (dirLightCount < maxDirLightCount)
                     {
-                        SetupDirectionalLight(dirLightCount++, i, ref visibleLight);
+                        SetupDirectionalLight(dirLightCount++, i, ref visibleLight, light);
                     }
                     break;
                 case LightType.Point:
                     if (otherLightCount < maxOtherLightCount)
                     {
                         newIndex = otherLightCount;
-                        SetupPointLight(otherLightCount++, i, ref visibleLight);
+                        SetupPointLight(otherLightCount++, i, ref visibleLight, light);
                     }
                     break;
                 case LightType.Spot:
                     if (otherLightCount < maxOtherLightCount)
                     {
                         newIndex = otherLightCount;
-                        SetupSpotLight(otherLightCount++, i, ref visibleLight);
+                        SetupSpotLight(otherLightCount++, i, ref visibleLight, light);
                     }
                     break;
             }
+            }//renderingLayerMask检查闭合
             if (useLightsPerObject)
             {
                 indexMap[i] = newIndex;//在遍历所有光的循环里，这个i是其中一盏灯，如果它是point/spot，给这个other light的索引++，把visible light的unity内部index映射到我srp的other light index
@@ -122,7 +125,7 @@ public class Lighting
         if (dirLightCount > 0)
         {
             buffer.SetGlobalVectorArray(dirLightColorsId, dirLightColors);
-            buffer.SetGlobalVectorArray(dirLightDirectionsId, dirLightDirections);
+            buffer.SetGlobalVectorArray(dirLightDirectionsAndMasksId, dirLightDirectionsAndMasks);
             buffer.SetGlobalVectorArray(dirLightShadowDataId, dirLightShadowData);
         }
 
@@ -132,39 +135,44 @@ public class Lighting
         {
             buffer.SetGlobalVectorArray(otherLightColorsId, otherLightColors);
             buffer.SetGlobalVectorArray(otherLightPositionsId, otherLightPositions);
-            buffer.SetGlobalVectorArray(otherLightDirectionsId, otherLightDirections);
+            buffer.SetGlobalVectorArray(otherLightDirectionsAndMasksId, otherLightDirectionsAndMasks);
             buffer.SetGlobalVectorArray(otherLightSpotAnglesId, otherLightSpotAngles);
             buffer.SetGlobalVectorArray(otherLightShadowDataId, otherLightShadowData);
         }
     }
 
-    void SetupDirectionalLight(int index, int visibleIndex, ref VisibleLight visibleLight)//如果直接把visibleLight作为参数传给此函数，会复制出一个visibleLight，而这个类型结构非常大，用引用传参，避免如此的额外内存
+    void SetupDirectionalLight(int index, int visibleIndex, ref VisibleLight visibleLight, Light light)
     {
         dirLightColors[index] = visibleLight.finalColor;
-        dirLightDirections[index] = -visibleLight.localToWorldMatrix.GetColumn(2);//方向，并且是反向
-        dirLightShadowData[index] = shadows.ReserveDirectionalShadows(visibleLight.light, visibleIndex);//对每一盏定向光，尝试为其保存阴影，顺便获取阴影强度和偏移
+        Vector4 dirAndMask = -visibleLight.localToWorldMatrix.GetColumn(2);//方向
+        dirAndMask.w = light.renderingLayerMask.ReinterpretAsFloat();//渲染层掩码塞入.w
+        dirLightDirectionsAndMasks[index] = dirAndMask;
+        dirLightShadowData[index] = shadows.ReserveDirectionalShadows(light, visibleIndex);
     }
 
-    void SetupPointLight(int index, int visibleIndex, ref VisibleLight visibleLight)
+    void SetupPointLight(int index, int visibleIndex, ref VisibleLight visibleLight, Light light)
     {
         otherLightColors[index] = visibleLight.finalColor;
         Vector4 position = visibleLight.localToWorldMatrix.GetColumn(3);
         position.w = 1f / Mathf.Max(visibleLight.range * visibleLight.range, 0.00001f);//1/(range*range)，省shader除法
         otherLightPositions[index] = position;
         otherLightSpotAngles[index] = new Vector4(0f, 1f);
-        Light light = visibleLight.light;
+        Vector4 dirAndMask = Vector4.zero;
+        dirAndMask.w = light.renderingLayerMask.ReinterpretAsFloat();
+        otherLightDirectionsAndMasks[index] = dirAndMask;
         otherLightShadowData[index] = shadows.ReserveOtherShadows(light, visibleIndex);
     }
 
-    void SetupSpotLight(int index, int visibleIndex, ref VisibleLight visibleLight)
+    void SetupSpotLight(int index, int visibleIndex, ref VisibleLight visibleLight, Light light)
     {
         otherLightColors[index] = visibleLight.finalColor;
         Vector4 position = visibleLight.localToWorldMatrix.GetColumn(3);
         position.w = 1f / Mathf.Max(visibleLight.range * visibleLight.range, 0.00001f);
         otherLightPositions[index] = position;
-        otherLightDirections[index] = -visibleLight.localToWorldMatrix.GetColumn(2);//依旧指向光源
+        Vector4 dirAndMask = -visibleLight.localToWorldMatrix.GetColumn(2);//依旧指向光源
+        dirAndMask.w = light.renderingLayerMask.ReinterpretAsFloat();
+        otherLightDirectionsAndMasks[index] = dirAndMask;
 
-        Light light = visibleLight.light;
         float innerCos = Mathf.Cos(Mathf.Deg2Rad * 0.5f * light.innerSpotAngle);//内角属性不在visibleLight中
         float outerCos = Mathf.Cos(Mathf.Deg2Rad * 0.5f * visibleLight.spotAngle);
         float angleRangeInv = 1f / Mathf.Max(innerCos - outerCos, 0.001f);

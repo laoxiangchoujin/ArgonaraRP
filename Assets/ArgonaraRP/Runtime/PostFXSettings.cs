@@ -15,7 +15,7 @@ public class PostFXSettings : ScriptableObject
    {
       get
       {
-         if (material == null && shader != null)//这好像没考虑shader是空咋办
+         if (material == null && shader != null)
          {
             material = new Material(shader);
             material.hideFlags = HideFlags.HideAndDontSave;
@@ -23,7 +23,6 @@ public class PostFXSettings : ScriptableObject
          return material;
       }
    }
-   
    
    //-----------------bloom-------------------//
    
@@ -58,7 +57,8 @@ public class PostFXSettings : ScriptableObject
 
    [SerializeField] BloomSettings bloom = new BloomSettings
    {
-      scatter = 0.7f    //URP、HDRP的默认值
+      scatter = 0.7f,    //URP、HDRP的默认值
+      downscaleLimit = 1 //int默认为0，会炸，手动设1保护
    }; //inspector里实际看到的是这一个，而非下边的public
    public BloomSettings Bloom => bloom;//这个public，提供一个只读属性，让其他代码不能像普通public一样改
 

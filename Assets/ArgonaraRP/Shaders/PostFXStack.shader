@@ -142,6 +142,21 @@ Shader "Hidden/ArgonaraRP/Post FX Stack"//hidden的好像不会在inspector里�
         {
             Name "LUT Final"
             
+            //-----------
+            //想象一个比较复杂的情况，a相机绘制整个屏幕，b相机的rect较小但画在a的画面上边。希望设置b的clearflag为天空盒，就只绘制b的场景物体到屏幕上，
+            //1.在无后处理时是正确的
+            //2.当开启了PostFx，我的管线会强制设置CameraClearFlags为color，那么b相机一定会用背景色填满b相机的rect区域，原本的b相机天空盒区域变成了b相机背景色
+				//如果设置Alpha混合为Blend SrcAlpha OneMinusSrcAlpha，且将b的背景色alpha设为0，此时禁用bloom，剔除区域的最终结果就是：小相机颜色 × 0 + 下层颜色 × (1-0) = 下层颜色 √
+            //3.此时，再启用bloom，b相机的bloom，不能扩散到透明区（也就是被按深度清除掉的区域），这不合适
+				//换成预乘Alpha混合，也就是Blend One OneMinusSrcAlpha,就能让小窗口，既读取a相机的背景色，又能让b相机的bloom在b相机区域内，把光晕画到背景色上
+				//此时要求，b相机的背景色的rgb纯黑，a是0，结果才对
+            //-------------
+            
+            
+            //相机叠加透明支持，混合模式由ArgonaraRenderPipelineCamera组件配置		//用来在特定的相机上达成上边注释所说的条件 ↑
+            //默认One Zero(覆写)，覆盖相机设One OneMinusSrcAlpha(预乘Alpha叠加)
+            Blend [_FinalSrcBlend] [_FinalDstBlend]
+            
             HLSLPROGRAM
             #pragma target 3.5
             #pragma vertex DefaultPassVertex

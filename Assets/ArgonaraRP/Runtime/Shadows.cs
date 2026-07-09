@@ -247,7 +247,10 @@ public class Shadows
 	{
 		ShadowedDirectionalLight light = ShadowedDirectionalLights[index];//用index获取产生阴影的light
 		// var shadowSettings = new ShadowDrawingSettings(cullingResults, light.visibleLightIndex, BatchCullingProjectionType.Orthographic);//疑似2022版需要标明是正交投影而2023版又不用标了
-		var shadowSettings = new ShadowDrawingSettings(cullingResults, light.visibleLightIndex);//Core库的类
+		var shadowSettings = new ShadowDrawingSettings(cullingResults, light.visibleLightIndex)
+		{
+			useRenderingLayerMaskTest = true
+		};
 		
 		int cascadeCount = settings.directional.cascadeCount;
 		int tileOffset = index * cascadeCount;//这个光源的 tile 起始位置//例如4灯*4级联，第一个灯级联在0~3，第二个灯级联在4~7...//每个灯有一个tileOffset
@@ -437,7 +440,10 @@ public class Shadows
 		var shadowSettings = new ShadowDrawingSettings(
 			cullingResults, light.visibleLightIndex,
 			BatchCullingProjectionType.Perspective//非平行光用透视投影画阴影
-		);
+		)
+		{
+			useRenderingLayerMaskTest = true
+		};
 		cullingResults.ComputeSpotShadowMatricesAndCullingPrimitives(
 			light.visibleLightIndex, out Matrix4x4 viewMatrix,
 			out Matrix4x4 projectionMatrix, out ShadowSplitData splitData);
@@ -482,7 +488,10 @@ public class Shadows
 		var shadowSettings = new ShadowDrawingSettings(
 			cullingResults, light.visibleLightIndex,
 			BatchCullingProjectionType.Perspective
-		);
+		)
+		{
+			useRenderingLayerMaskTest = true
+		};
 
 		float texelSize = 2f / (tileSize); //因为立方体贴图，视场角固定是90度，距离1处的世界空间平铺尺寸始终是2
 		float filterSize = texelSize * ((float)settings.other.filter + 1f);
