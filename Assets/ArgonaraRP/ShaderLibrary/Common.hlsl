@@ -29,14 +29,6 @@ float DistanceSquared(float3 pA, float3 pB) {
     return dot(pA - pB, pA - pB);
 }
 
-void ClipLOD(float2 positionCS, float fade)
-{
-    #if defined(LOD_FADE_CROSSFADE)
-        float dither = InterleavedGradientNoise(positionCS.xy, 0);
-        clip(fade + (fade < 0.0 ? dither : -dither));
-    #endif
-}
-
 #if defined(_SHADOW_MASK_ALWAYS) || defined(_SHADOW_MASK_DISTANCE)//对于occlusion probe，UnityInstancing 仅在定义了 SHADOWS_SHADOWMASK 时才能实例化
     #define SHADOWS_SHADOWMASK
 #endif
@@ -46,6 +38,33 @@ void ClipLOD(float2 positionCS, float fade)
 //汇入矩阵到函数库中
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/SpaceTransforms.hlsl"
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl"
+
+SAMPLER(sampler_linear_clamp);
+SAMPLER(sampler_point_clamp);
+
+bool IsOrthographicCamera()
+{
+    return unity_OrthoParams.w;
+}
+
+//获取正交投影下的片元深度值
+float OrthographicDepthBufferToLinear(float rawDepth)
+{
+    #if UNITY_REVERSED_Z
+        rawDepth = 1.0 - rawDepth;
+    #endif
+    return (_ProjectionParams.z - _ProjectionParams.y) * rawDepth + _ProjectionParams.y;//(远平面-近)*线性01+近
+}
+
+#include "Fragment.hlsl"
+
+void ClipLOD(Fragment fragment, float fade)
+{
+    #if defined(LOD_FADE_CROSSFADE)
+    float dither = InterleavedGradientNoise(fragment.positionSS, 0);
+    clip(fade + (fade < 0.0 ? dither : -dither));
+    #endif
+}
 
 float3 DecodeNormal (float4 sample, float scale) {
     #if defined(UNITY_NO_DXT5nm)

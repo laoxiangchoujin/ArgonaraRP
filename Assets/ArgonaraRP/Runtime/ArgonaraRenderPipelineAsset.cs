@@ -4,8 +4,13 @@ using UnityEngine.Rendering;
 [CreateAssetMenu(menuName = "Rendering/Argonara Render Pipeline Asset")]
 public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPipeline>
 {
+    //[SerializeField]
+    //bool allowHDR = true;
+
     [SerializeField]
-    bool allowHDR = true;
+    CameraBufferSettings cameraBuffer = new CameraBufferSettings {
+        allowHDR = true
+    };
     
     [SerializeField]
     bool useDynamicBatching = true, useGPUInstancing = true, useSRPBatcher = true, useLightsPerObject = true;
@@ -20,10 +25,13 @@ public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPip
     
     [SerializeField]
     ColorLUTResolution colorLUTResolution = ColorLUTResolution._32;
+
+    [SerializeField] 
+    Shader cameraRendererShader = default;
     
     protected override RenderPipeline CreatePipeline()
     {
-        return new ArgonaraRenderPipeline(allowHDR, useDynamicBatching, useGPUInstancing, useSRPBatcher, 
-            useLightsPerObject, shadows, postFXSettings, (int)colorLUTResolution);
+        return new ArgonaraRenderPipeline(cameraBuffer, useDynamicBatching, useGPUInstancing, useSRPBatcher, 
+            useLightsPerObject, shadows, postFXSettings, (int)colorLUTResolution, cameraRendererShader);
     }
 }

@@ -10,7 +10,7 @@ struct Attributes {
 
 struct Varyings
 {
-    float4 positionCS : SV_POSITION;
+    float4 positionCS_SS : SV_POSITION;
     float2 baseUV : VAR_BASE_UV;
     UNITY_VERTEX_INPUT_INSTANCE_ID
 };
@@ -21,7 +21,7 @@ Varyings UnlitTransparentPassVertex(Attributes input)// : SV_Position
     UNITY_SETUP_INSTANCE_ID(input);//使索引可用
     UNITY_TRANSFER_INSTANCE_ID(input, output);//索引传到frag
     float3 positionWS = TransformObjectToWorld(input.positionOS);
-    output.positionCS = TransformWorldToHClip(positionWS);
+    output.positionCS_SS = TransformWorldToHClip(positionWS);
     output.baseUV = TransformBaseUV(input.baseUV);
     return output;
 }
@@ -30,7 +30,7 @@ float4 UnlitTransparentPassFragment(Varyings input) : SV_Target
 {
     UNITY_SETUP_INSTANCE_ID(input);//frag里，使索引可用
     
-    InputConfig config = GetInputConfig(input.baseUV);
+    InputConfig config = GetInputConfig(input.positionCS_SS, input.baseUV);
     float4 base = GetBase(config);
     
     #if defined(_CLIPPING)

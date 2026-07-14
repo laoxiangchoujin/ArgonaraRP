@@ -3,12 +3,12 @@
 
 TEXTURE2D(_PostFXSource);
 TEXTURE2D(_PostFXSource2);
-SAMPLER(sampler_linear_clamp);
+//SAMPLER(sampler_linear_clamp);已移至Common.hlsl
 float4 _PostFXSource_TexelSize;
 
 struct Varyings
 {
-    float4 positionCS : SV_POSITION;
+    float4 positionCS_SS : SV_POSITION;
     float2 screenUV : VAR_SCREEN_UV;
 };
 
@@ -17,7 +17,7 @@ struct Varyings
 Varyings DefaultPassVertex(uint vertexID : SV_VertexID)
 {
     Varyings output;
-    output.positionCS = float4(
+    output.positionCS_SS = float4(
         vertexID <= 1 ? -1.0 : 3.0,
         vertexID == 1 ? 3.0 : -1.0,//绘制在三角形的左下角，裁剪空间xy是-1~1
         0.0, 1.0

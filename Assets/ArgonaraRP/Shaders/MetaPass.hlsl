@@ -17,7 +17,7 @@ struct Attributes {
 };
 
 struct Varyings {
-	float4 positionCS : SV_POSITION;
+	float4 positionCS_SS : SV_POSITION;
 	float2 baseUV : VAR_BASE_UV;
 };
 
@@ -26,13 +26,13 @@ Varyings MetaPassVertex (Attributes input) {
 	//lightMapUV 在这不是用来采样 Lightmap，而是把物体从 3D 空间"展开"成 2D 的 Lightmap 布局，让 GPU 在这张展开图上重画一遍物体材质。
 	input.positionOS.xy = input.lightMapUV * unity_LightmapST.xy + unity_LightmapST.zw;//物体在lightmap上的xy坐标，也就是lightmapUV，作为ObjectSpace的xy
 	input.positionOS.z = input.positionOS.z > 0.0 ? FLT_MIN : 0.0;//纯粹为了兼容 OpenGL，OpenGL 要求 Z 坐标有明确的值，否则可能编译报错，烘焙器不关心深度
-	output.positionCS = TransformWorldToHClip(input.positionOS);//该函数执行的是与其名称所暗示的不同类型的转换
+	output.positionCS_SS = TransformWorldToHClip(input.positionOS);//该函数执行的是与其名称所暗示的不同类型的转换
 	output.baseUV = TransformBaseUV(input.baseUV);
 	return output;
 }
 
 float4 MetaPassFragment (Varyings input) : SV_TARGET {
-	InputConfig config = GetInputConfig(input.baseUV);
+	InputConfig config = GetInputConfig(input.positionCS_SS, input.baseUV);
 	float4 base = GetBase(config);
 	Surface surface;
 	ZERO_INITIALIZE(Surface, surface);

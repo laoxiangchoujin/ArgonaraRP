@@ -6,6 +6,8 @@ using LightType = UnityEngine.LightType;
 public partial class ArgonaraRenderPipeline{
 	partial void InitializeForEditor();
 
+	partial void DisposeForEditor();
+
 	//仅对于编辑器，重写light mapper设置光照数据的方式
 	#if UNITY_EDITOR
 		partial void InitializeForEditor()
@@ -13,9 +15,8 @@ public partial class ArgonaraRenderPipeline{
 			Lightmapping.SetDelegate(lightsDelegate);//调用委托
 		}
 
-		protected override void Dispose(bool disposing)//清理并重置委托
+		partial void DisposeForEditor()//清理并重置委托
 		{
-			base.Dispose(disposing);
 			Lightmapping.ResetDelegate();
 		}
 	

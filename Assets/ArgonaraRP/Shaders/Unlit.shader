@@ -8,7 +8,9 @@ Shader "Argonara RP/Unlit"
         _Cutoff ("Alpha Cutoff", Range(0.0, 1.0)) = 0.5
         [Toggle(_CLIPPING)]_Clipping("Alpha Clipping",Float) = 0
     	
-    	[HDR] _EmissionColor("Emission", Color) = (0.0, 0.0, 0.0, 0.0)
+        [HDR] _EmissionColor("Emission", Color) = (0.0, 0.0, 0.0, 0.0)
+        
+        [Toggle(_VERTEX_COLORS)] _VertexColors ("Vertex Colors", Float) = 0
         
         [Enum(UnityEngine.Rendering.BlendMode)]_SrcBlend("Src Blend",Float) = 1
         [Enum(UnityEngine.Rendering.BlendMode)]_DstBlend("Dst Blend",Float) = 0
@@ -31,6 +33,7 @@ Shader "Argonara RP/Unlit"
             
             HLSLPROGRAM
             #pragma shader_feature _CLIPPING
+            #pragma shader_feature _VERTEX_COLORS
             #pragma multi_compile_instancing//它一定要写在vert和frag前面吗？为啥？
             #pragma vertex UnlitPassVertex
             #pragma fragment UnlitPassFragment

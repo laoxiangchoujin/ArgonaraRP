@@ -38,7 +38,10 @@ CBUFFER_END
 
 float3 _WorldSpaceCameraPos;//像是这个变量，就应该是全局而非是逐物体的，就得移出CBuffer
 
+float4 unity_OrthoParams;//若是正交相机，则此值w为1
 float4 _ProjectionParams;
+float4 _ScreenParams;
+float4 _ZBufferParams;
 
 float4x4 unity_MatrixVP;
 float4x4 unity_MatrixV;
