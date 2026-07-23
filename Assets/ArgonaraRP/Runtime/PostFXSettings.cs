@@ -53,6 +53,8 @@ public class PostFXSettings : ScriptableObject
       public Mode mode;
 
       [Range(0.05f, 0.95f)] public float scatter;//scatter模式是将两层blur结果做lerp，那么不能用0或1的值，那没有意义
+
+      public bool ignoreRenderScale;//bloom依赖于分辨率，和渲染缩放有关。
    }
 
    [SerializeField] BloomSettings bloom = new BloomSettings

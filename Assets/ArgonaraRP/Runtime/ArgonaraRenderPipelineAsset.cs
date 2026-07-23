@@ -9,7 +9,8 @@ public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPip
 
     [SerializeField]
     CameraBufferSettings cameraBuffer = new CameraBufferSettings {
-        allowHDR = true
+        allowHDR = true,
+        renderScale = 1f
     };
     
     [SerializeField]

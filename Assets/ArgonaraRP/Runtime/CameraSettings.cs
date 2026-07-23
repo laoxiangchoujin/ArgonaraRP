@@ -27,4 +27,18 @@ public class CameraSettings
     public bool maskLights = false;//是否同时对灯光应用渲染层过滤
 
     public bool copyColor = true, copyDepth = true;//本相机是否复制颜色/深度纹理（需管线全局也开启才生效）
+    
+    //逐相机的渲染缩放设置
+    public enum RenderScaleMode {Inherit, Multiply, Override}
+    
+    public RenderScaleMode renderScaleMode = RenderScaleMode.Inherit;
+
+    [Range(CameraRenderer.renderScaleMin, CameraRenderer.renderScaleMax)] public float renderScale = 1f;
+
+    public float GetRenderScale(float scale)
+    {
+        return renderScaleMode == RenderScaleMode.Inherit ? scale : 
+            renderScaleMode == RenderScaleMode.Override ? renderScale :
+            scale * renderScale;
+    }
 }

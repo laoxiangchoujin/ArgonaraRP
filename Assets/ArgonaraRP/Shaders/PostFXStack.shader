@@ -163,5 +163,21 @@ Shader "Hidden/ArgonaraRP/Post FX Stack"//hidden的好像不会在inspector里�
             #pragma fragment FinalPassFragment
 			ENDHLSL
         }
+
+		Pass
+		{
+			Name "Final Rescale"
+			//若渲染缩放就是1，只用上面的LUT Final Pass就行，无须如此
+			//若有额外的渲染缩放，那么post fx最终画到屏幕上不能用上面的pass，那样会先rescale分辨率到屏幕分辨率，会让像素颜色之间做插值
+			//1.tonemapping前是HDR颜色，HDR插值是不对的，例如1和10取均值还远大于1。2.缩放插值后的颜色和LUT查找表不匹配。两个问题
+			//解决方式是先做color grading和tonemapping，再rescale到屏幕分辨率
+			Blend [_FinalSrcBlend] [_FinalDstBlend]
+			
+			HLSLPROGRAM
+            #pragma target 3.5
+            #pragma vertex DefaultPassVertex
+            #pragma fragment FinalPassFragmentRescale
+			ENDHLSL
+		}
     }
 }

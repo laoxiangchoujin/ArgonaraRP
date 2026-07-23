@@ -45,6 +45,10 @@
 - **Split Toning**：gamma空间 SoftLight 混合，阴影/高光分别染色，balance控制过渡点
 - **SMH**：三段权重 × 染色色(HDR可选)，smoothstep过渡
 
+- **渲染缩放 Rescale（LDR rescale）**：render scale≠1 时 DoColorGradingAndToneMapping 走 else 分支——先用 Pass.Final 在 bufferSize 尺寸做分级+tone mapping 写入 `_FinalResult` 临时RT（LDR），再用 Pass.FinalRescale（双线性/双三次）把 LDR 缩放到屏幕物理分辨率。核心：缩放插值只发生在 LDR，避免 HDR 锯齿与色带。scale=1 时直接 `DrawFinal(sourceId, Pass.Final)`。
+- **双三次重缩放 BicubicRescaling**：CameraBufferSettings.bicubicRescaling 开关 → Setup 传参 → shader `_CopyBicubic` 控制 FinalPassFragmentRescale 走 GetSource 或 GetSourceBicubic。
+- **Bloom 与渲染缩放**：DoBloom 用 bufferSize（非 camera.pixelWidth）计算金字塔尺寸；bloom.ignoreRenderScale 可让 bloom 忽略缩放、用物理像素半分辨率。
+
 ### 多相机与层
 - **相机叠加**：FinalBlendMode（One Zero/One OneMinusSrcAlpha），DrawFinal尊重viewport + blend
 - **渲染层**：RenderingLayerMask（31层，int.MaxValue解-1），灯光/阴影/物体三层过滤
@@ -89,3 +93,7 @@
 - 不透明物体 `GetFinalAlpha`：ZWrite ON → 强制Alpha=1（忽略贴图alpha）
 - Alpha混合 `One OneMinusSrcAlpha`：保证累积正确
 - `Blend [_SrcBlend] [_DstBlend], One OneMinusSrcAlpha`：颜色+Alpha分控
+
+### 调试陷阱
+- **shader `#pragma fragment` 函数名必须与 hlsl 定义完全一致**：否则该 pass 编译失败、找不到入口，对应后处理分支（如 render scale≠1 的 FinalRescale）不写屏幕→黑屏。现象常为"仅某条件分支黑屏"。排查：Console 看 shader 编译报错 + Frame Debugger 看对应 draw call 是否标红。
+- **中间RT句柄 vs shader uniform**：`Shader.PropertyToID("_FinalResult")` 等只是 C# 端 RT 标签，shader 不认此名；真正让 shader 读到靠 `SetGlobalTexture(_PostFXSource, rtId)` 复用既有全局纹理通道。

@@ -19,6 +19,8 @@ public partial class PostFXStack
 
     private int colorLUTResolution;
     
+    private Vector2Int bufferSize;
+    
     public bool IsActive => settings != null;//如果没有整体的setting，那么整体的Stack就被跳过
 
     enum Pass//要调用对应的shader里的第几个pass
@@ -35,12 +37,14 @@ public partial class PostFXStack
         ColorGradingACES,
         ColorGradingNeutral,
         ColorGradingReinhard,
-        Final
+        Final,
+        FinalRescale
     }
-
+    
     ///初始化
-    public void Setup(ScriptableRenderContext context, Camera camera, PostFXSettings settings, 
-        bool useHDR, int colorLUTResolution, CameraSettings.FinalBlendMode finalBlendMode)
+    public void Setup(ScriptableRenderContext context, Camera camera, Vector2Int bufferSize, PostFXSettings settings, 
+        bool useHDR, int colorLUTResolution, CameraSettings.FinalBlendMode finalBlendMode,
+        CameraBufferSettings.BicubicRescalingMode bicubicRescaling)
     {
         this.context = context;
         this.camera = camera;
@@ -48,6 +52,8 @@ public partial class PostFXStack
         this.useHDR = useHDR;
         this.colorLUTResolution = colorLUTResolution;
         this.finalBlendMode = finalBlendMode;
+        this.bufferSize = bufferSize;
+        this.bicubicRescaling = bicubicRescaling;
         ApplySceneViewState();
     }
 
@@ -79,7 +85,7 @@ public partial class PostFXStack
     ///假设有两个相机，分别画屏幕的左半右半，那么无后处理时ok的；有后处理的话SetRenderTarget会把绘制区域设为整个屏幕
     ///所以，有后处理的，最后一次画到屏幕上的绘制，额外调用SetViewport
     ///实际上不需要特殊的脚本，只要有两个相机，深度设为相同，然后viewPort矩形设置为(0,0)~(0.5,1)和(0.5,0)~(1,1)，就实现分屏了
-    void DrawFinal(RenderTargetIdentifier from)//肯定是用final pass，画到屏幕上的某个rect区域
+    void DrawFinal(RenderTargetIdentifier from, Pass pass)//肯定是用final pass，画到屏幕上的某个rect区域
     {
         buffer.SetGlobalFloat(finalSrcBlendId, (float)finalBlendMode.source);
         buffer.SetGlobalFloat(finalDstBlendId, (float)finalBlendMode.destination);
@@ -89,7 +95,7 @@ public partial class PostFXStack
                 RenderBufferLoadAction.DontCare : RenderBufferLoadAction.Load, //如果final pass时，混合模式完全不需要看原图长啥样，那就DontCare；需要用原图混合的，就加载一下原图//全屏覆写可跳过加载，分屏或需混合则必须加载已有内容
             RenderBufferStoreAction.Store);
         buffer.SetViewport(camera.pixelRect);
-        buffer.DrawProcedural(Matrix4x4.identity, settings.Material, (int)Pass.Final, MeshTopology.Triangles, 3);
+        buffer.DrawProcedural(Matrix4x4.identity, settings.Material, (int)pass, MeshTopology.Triangles, 3);
     }
     
     ///执行后处理Stack
@@ -131,7 +137,18 @@ public partial class PostFXStack
     {
         BloomSettings bloom = settings.Bloom;
         
-        int width = camera.pixelWidth / 2, height = camera.pixelHeight / 2;
+        int width, height;
+        if (bloom.ignoreRenderScale)
+        {
+            width = camera.pixelWidth / 2;
+            height = camera.pixelHeight / 2;
+        }
+        else
+        {
+            width = bufferSize.x / 2;
+            height = bufferSize.y / 2;
+        }
+        
         if (bloom.maxIterations == 0 || bloom.intensity <= 0f || height < bloom.downscaleLimit * 2 || width < bloom.downscaleLimit * 2)//这的两个”*2“，是配合跳过第一次半分辨率的，金字塔从1/4分辨率开始，则1/2宽高(这里1/2是上边已经除了2)<limit*2也就是1/4宽高<limit，这宽高是int所以不能除
         {
             return false;
@@ -233,7 +250,7 @@ public partial class PostFXStack
 
         buffer.SetGlobalFloat(bloomIntensityId, finalIntensity);
         buffer.SetGlobalTexture(fxSource2Id, sourceId);
-        buffer.GetTemporaryRT(bloomResultId, camera.pixelWidth, camera.pixelHeight, 0, FilterMode.Bilinear, format);
+        buffer.GetTemporaryRT(bloomResultId, bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear, format);
         Draw(fromId, bloomResultId, finalPass);//bloom结果先渲染到bloomResult RT，供后续tone mapping使用
         buffer.ReleaseTemporaryRT(fromId);
         buffer.EndSample("Bloom");
@@ -304,6 +321,11 @@ public partial class PostFXStack
     int colorGradingLUTParametersId = Shader.PropertyToID("_ColorGradingLUTParameters");
     int colorGradingLUTInLogC = Shader.PropertyToID("_ColorGradingLUTInLogC");
     
+    int finalResultId = Shader.PropertyToID("_FinalResult");
+    private int copyBicubicId = Shader.PropertyToID("_CopyBicubic");
+
+    private CameraBufferSettings.BicubicRescalingMode bicubicRescaling;
+    
     //色调映射，用于处理HDR颜色，将其转换为LDR颜色     超过1的部分如5的亮度映射到1，暗部几乎不变，是非线性变换
     //一般toneMapping放在Bloom后边
     //这里同时做颜色分级和色调映射        //正确的色彩处理顺序是，原始HDR、色彩矫正、色彩分级、色调映射(tonemapping)、显示器LDR
@@ -328,7 +350,23 @@ public partial class PostFXStack
         
         buffer.SetGlobalVector(colorGradingLUTParametersId, new Vector4(1f / lutWidth, 1f / lutHeight, lutHeight - 1f));
         //Draw(sourceId, BuiltinRenderTextureType.CameraTarget, Pass.Final);
-        DrawFinal(sourceId);
+        if (bufferSize.x == camera.pixelWidth)
+        {
+            DrawFinal(sourceId, Pass.Final);
+        }
+        else
+        {
+            buffer.SetGlobalFloat(finalSrcBlendId, 1f);
+            buffer.SetGlobalFloat(finalDstBlendId, 0f);
+            buffer.GetTemporaryRT(finalResultId, bufferSize.x, bufferSize.y, 0,
+                FilterMode.Bilinear, RenderTextureFormat.Default);
+            Draw(sourceId, finalResultId, Pass.Final);
+            bool bicubicSampling = bicubicRescaling == CameraBufferSettings.BicubicRescalingMode.Always ||
+                                   bicubicRescaling == CameraBufferSettings.BicubicRescalingMode.OnRenderScaleBelowOne && bufferSize.x < camera.pixelWidth;
+            buffer.SetGlobalFloat(copyBicubicId, bicubicSampling ? 1f : 0f);
+            DrawFinal(finalResultId, Pass.FinalRescale);
+            buffer.ReleaseTemporaryRT(finalResultId);
+        }
         buffer.ReleaseTemporaryRT(colorGradingLUTId);
     }
     

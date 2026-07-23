@@ -23,6 +23,7 @@ MonoBehaviour:
     fadeFireflies: 1
     mode: 1
     scatter: 0.7
+    ignoreRenderScale: 0
   colorAdjustments:
     postExposure: 0
     contrast: 0

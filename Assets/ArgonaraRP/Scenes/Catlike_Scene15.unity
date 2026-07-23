@@ -15530,11 +15530,14 @@ MonoBehaviour:
     finalBlendMode:
       source: 1
       destination: 0
-    overridePostFX: 1
-    postFXSettings: {fileID: 11400000, guid: 16ebc262411dd4740a20a073d3ee010c, type: 2}
+    overridePostFX: 0
+    postFXSettings: {fileID: 11400000, guid: 80dc71d8e864e284581e4ac8f8a23efe, type: 2}
     renderingLayerMask: -1
     maskLights: 0
+    copyColor: 1
     copyDepth: 1
+    renderScaleMode: 0
+    renderScale: 1
 --- !u!81 &2105758356
 AudioListener:
   m_ObjectHideFlags: 0

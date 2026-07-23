@@ -21,12 +21,16 @@ public partial class CameraRenderer
     
     PostFXStack postFXStack = new PostFXStack();//堆栈实例
 
-    bool useHDR;
+    bool useHDR, useScaleRendering;
+
+    private Vector2Int bufferSize;
 
     static CameraSettings defaultCameraSettings = new CameraSettings();//没有挂组件的相机用默认设置
 
     bool useColorTexture, useDepthTexture, 
         useIntermediateBuffer;
+    
+    public const float renderScaleMin = 0.1f, renderScaleMax = 2f;
     
     ///绘制相机能看到的所有几何图形
     public void Render(ScriptableRenderContext context, Camera camera, CameraBufferSettings bufferSettings,
@@ -56,6 +60,8 @@ public partial class CameraRenderer
             postFXSettings = cameraSettings.postFXSettings;//相机自己的后处理设置覆盖管线全局设置
         }
 
+        float renderScale = cameraSettings.GetRenderScale(bufferSettings.renderScale);
+        useScaleRendering = renderScale < 0.99f || renderScale > 1.01f;
         PrepareBuffer();
         PrepareForSceneWindow();//给scene view里的UI物体添加到世界几何体中，因为可能会为场景增加一些几何体，所以要在剔除前做
         if (!Cull(shadowSettings.maxDistance))
@@ -64,13 +70,26 @@ public partial class CameraRenderer
         }
         
         useHDR = bufferSettings.allowHDR && camera.allowHDR;//HDR双控：管线全局开关 + 相机自身开关
+
+        if (useScaleRendering)
+        {
+            renderScale = Mathf.Clamp(renderScale, renderScaleMin, renderScaleMax);
+            bufferSize.x = (int) (camera.pixelWidth * renderScale);
+            bufferSize.y = (int) (camera.pixelHeight * renderScale);
+        }
+        else
+        {
+            bufferSize.x = camera.pixelWidth;
+            bufferSize.y = camera.pixelHeight;
+        }
         
         //如果给lighting一个专门的sample，可以在主相机claer之前，把阴影项嵌套在main camera中
         buffer.BeginSample(SampleName);
+        buffer.SetGlobalVector(bufferSizeId, new Vector4(1f/bufferSize.x, 1f/bufferSize.y, bufferSize.x, bufferSize.y));//渲染缩放后，替代_ScreenParams
         ExecuteBuffer();
         lighting.Setup(context, cullingResults, shadowSettings, useLightsPerObject,
             cameraSettings.maskLights ? cameraSettings.renderingLayerMask : -1);//相机可选的灯光渲染层过滤
-        postFXStack.Setup(context, camera, postFXSettings, useHDR, colorLUTResolution, cameraSettings.finalBlendMode);
+        postFXStack.Setup(context, camera, bufferSize, postFXSettings, useHDR, colorLUTResolution, cameraSettings.finalBlendMode, bufferSettings.bicubicRescaling);
         buffer.EndSample(SampleName);
         
         Setup();//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程   //第二个beginSample
@@ -123,6 +142,8 @@ public partial class CameraRenderer
     static int sourceTextureId = Shader.PropertyToID("_SourceTexture");
     static int srcBlendId = Shader.PropertyToID("_CameraSrcBlend");
     static int dstBlendId = Shader.PropertyToID("_CameraDstBlend");
+
+    private static int bufferSizeId = Shader.PropertyToID("_CameraBufferSize");//因为unity默认提供的_ScreenParams数值不会随我们的渲染缩放调整，需要自己传值替代
     
     ///将相机的属性应用于上下文context
     void Setup()
@@ -130,7 +151,8 @@ public partial class CameraRenderer
         context.SetupCameraProperties(camera); //渲染前设置正确的相机矩阵unity_MatrixVP
         CameraClearFlags flags = camera.clearFlags;//它有4个值，1~4是Skybox,Color,Depth,Nothing，
 
-        useIntermediateBuffer = useColorTexture || useDepthTexture || postFXStack.IsActive;
+        useIntermediateBuffer = useScaleRendering || 
+                                useColorTexture || useDepthTexture || postFXStack.IsActive;
         if (useIntermediateBuffer)//若要执行FX堆栈，则需要获取帧缓冲
         {
             if (flags > CameraClearFlags.Color)//color是2，只清depth或什么都不清是3或4
@@ -141,9 +163,9 @@ public partial class CameraRenderer
             //若有后处理启用，把渲染目标设为临时纹理，而非屏幕，所以，DrawVisibleGeometry(),DrawUnsupportedShaders(),DrawGizmosBeforeFX()此时都只画在"_CameraFrameBuffer"上
             
             //把frameBufferId的单独的帧缓冲区纹理拆成颜色和深度
-            buffer.GetTemporaryRT(colorAttachmentId, camera.pixelWidth, camera.pixelHeight, 0, FilterMode.Bilinear,
+            buffer.GetTemporaryRT(colorAttachmentId, bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
                 useHDR ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default);//是否启用HDR只对后处理堆栈有影响，因此在这决定RT的格式
-            buffer.GetTemporaryRT(depthAttachmentId, camera.pixelWidth, camera.pixelHeight, 32, FilterMode.Point,
+            buffer.GetTemporaryRT(depthAttachmentId, bufferSize.x, bufferSize.y, 32, FilterMode.Point,
                 RenderTextureFormat.Depth);
             buffer.SetRenderTarget(colorAttachmentId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
                 depthAttachmentId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);//设置渲染目标的时候，这样写，就是两张纹理共享一个帧缓冲区
@@ -259,7 +281,7 @@ public partial class CameraRenderer
         //颜色纹理拷贝（折射/扭曲等透明物体需要）
         if (useColorTexture)
         {
-            buffer.GetTemporaryRT(colorTextureId, camera.pixelWidth, camera.pixelHeight, 0, FilterMode.Bilinear,
+            buffer.GetTemporaryRT(colorTextureId, bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
                 useHDR ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default);
             if (copyTextureSupported)
             {
@@ -273,7 +295,7 @@ public partial class CameraRenderer
         //深度纹理拷贝（软粒子等需要）
         if (useDepthTexture)
         {
-            buffer.GetTemporaryRT(depthTextureId, camera.pixelWidth, camera.pixelHeight, 32, FilterMode.Point, RenderTextureFormat.Depth);
+            buffer.GetTemporaryRT(depthTextureId, bufferSize.x, bufferSize.y, 32, FilterMode.Point, RenderTextureFormat.Depth);
             if (copyTextureSupported)
             {
                 buffer.CopyTexture(depthAttachmentId, depthTextureId);

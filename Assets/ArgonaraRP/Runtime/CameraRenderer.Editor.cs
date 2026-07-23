@@ -95,6 +95,7 @@ partial class CameraRenderer
         if (camera.cameraType == CameraType.SceneView)
         {
             ScriptableRenderContext.EmitWorldGeometryForSceneView(camera);
+            useScaleRendering = false;//不希望在scene窗口应用渲染缩放
         }
     }
 
