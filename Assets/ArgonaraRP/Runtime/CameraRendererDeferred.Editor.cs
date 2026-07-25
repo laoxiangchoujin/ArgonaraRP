@@ -3,7 +3,7 @@ using UnityEngine;
 using UnityEngine.Profiling;
 using UnityEngine.Rendering;
 
-partial class CameraRenderer
+partial class CameraRendererDeferred
 {
     //CameraRenderer无论是否在editor，都在调用它，而我们希望它只在editor出现，
     //这里我们用partial声明分部函数，当编译器找不到partial函数的实现时，会自动删掉所有此函数的调用
@@ -69,7 +69,7 @@ partial class CameraRenderer
         {
             if (useIntermediateBuffer)
             {
-                Draw(depthAttachmentId, BuiltinRenderTextureType.CameraTarget, true);
+                Draw(gDepthId, BuiltinRenderTextureType.CameraTarget, true);
                 ExecuteBuffer();
             }
             context.DrawGizmos(camera, GizmoSubset.PreImageEffects);
@@ -82,7 +82,7 @@ partial class CameraRenderer
         {
             if (postFXStack.IsActive)
             {
-                Draw(depthAttachmentId, BuiltinRenderTextureType.CameraTarget, true);
+                Draw(gDepthId, BuiltinRenderTextureType.CameraTarget, true);
                 ExecuteBuffer();
             }
             context.DrawGizmos(camera, GizmoSubset.PostImageEffects);

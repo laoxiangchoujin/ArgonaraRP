@@ -4,6 +4,11 @@ using UnityEngine.Rendering;
 [CreateAssetMenu(menuName = "Rendering/Argonara Render Pipeline Asset")]
 public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPipeline>
 {
+    public enum CameraRendererType {forward, deferred}
+    
+    [SerializeField]
+    CameraRendererType cameraRendererType = CameraRendererType.forward;
+    
     //[SerializeField]
     //bool allowHDR = true;
 
@@ -32,7 +37,7 @@ public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPip
     
     protected override RenderPipeline CreatePipeline()
     {
-        return new ArgonaraRenderPipeline(cameraBuffer, useDynamicBatching, useGPUInstancing, useSRPBatcher, 
+        return new ArgonaraRenderPipeline(cameraRendererType, cameraBuffer, useDynamicBatching, useGPUInstancing, useSRPBatcher, 
             useLightsPerObject, shadows, postFXSettings, (int)colorLUTResolution, cameraRendererShader);
     }
 }

@@ -10,7 +10,7 @@
 	#define GI_ATTRIBUTE_DATA
 	#define GI_VARYINGS_DATA
 	#define TRANSFER_GI_DATA(input, output)
-	#define GI_FRAGMENT_DATA(input) 0.0
+	#define GI_FRAGMENT_DATA(input) float2(0.0, 0.0)
 #endif
 
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/EntityLighting.hlsl"
@@ -86,6 +86,35 @@ float3 SampleLightProbe(Surface surfaceWS)
 	#endif
 }
 
+float3 SampleLightProbe(float3 positionWS, float3 normalWS)
+{
+	#if defined(LIGHTMAP_ON)
+	return 0;//静态物体，有光照贴图，就不用光照探针了
+	#else
+	if (unity_ProbeVolumeParams.x)//若此值为真，则表示有LPPV数据
+	{
+		return SampleProbeVolumeSH4(TEXTURE3D_ARGS(unity_ProbeVolumeSH, samplerunity_ProbeVolumeSH),
+			positionWS,normalWS,
+			unity_ProbeVolumeWorldToObject,
+			unity_ProbeVolumeParams.y, unity_ProbeVolumeParams.z,
+			unity_ProbeVolumeMin.xyz, unity_ProbeVolumeSizeInv.xyz
+		);
+	}
+	else
+	{
+		float4 coefficients[7];
+		coefficients[0] = unity_SHAr;
+		coefficients[1] = unity_SHAg;
+		coefficients[2] = unity_SHAb;
+		coefficients[3] = unity_SHBr;
+		coefficients[4] = unity_SHBg;
+		coefficients[5] = unity_SHBb;
+		coefficients[6] = unity_SHC;
+		return max(0.0, SampleSH9(coefficients, normalWS));
+	}
+	#endif
+}
+
 float4 SampleBakedShadows(float2 lightMapUV, Surface surfaceWS)
 {
 	#if defined(LIGHTMAP_ON)//虽然是ShadowMask，但要用lightMapUV，所以得看LIGHTMAP_ON
@@ -131,6 +160,23 @@ GI GetGI(float2 lightMapUV, Surface surfaceWS, BRDF brdf)
 	return gi;
 }
 
-
+GI GetGI(float3 precomputedIndirectDiffuse, Surface surfaceWS, BRDF brdf)
+{
+	GI gi;
+	gi.diffuse = precomputedIndirectDiffuse;
+	gi.specular = SampleEnvironment(surfaceWS, brdf);
+	gi.shadowMask.always = false;
+	gi.shadowMask.distance = false;
+	gi.shadowMask.shadows = 1.0;
+	
+	// #if defined(_SHADOW_MASK_ALWAYS)
+	// gi.shadowMask.always = true;
+	// gi.shadowMask.shadows = SampleBakedShadows(lightMapUV, surfaceWS);
+	// #elif defined(_SHADOW_MASK_DISTANCE)
+	// gi.shadowMask.distance = true;
+	// gi.shadowMask.shadows = SampleBakedShadows(lightMapUV, surfaceWS);
+	// #endif
+	return gi;
+}
 
 #endif

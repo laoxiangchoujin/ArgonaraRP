@@ -16,6 +16,7 @@
 
 //针对unity 2022需要的3个额外宏
 #define UNITY_MATRIX_I_V unity_MatrixInvV
+#define UNITY_MATRIX_I_VP unity_MatrixInvVP
 #define UNITY_PREV_MATRIX_M unity_prev_MatrixM//这俩是？
 #define UNITY_PREV_MATRIX_I_M unity_prev_MatrixIM
 

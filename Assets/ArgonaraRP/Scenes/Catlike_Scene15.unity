@@ -38,7 +38,7 @@ RenderSettings:
   m_ReflectionIntensity: 1
   m_CustomReflection: {fileID: 0}
   m_Sun: {fileID: 0}
-  m_IndirectSpecularColor: {r: 0, g: 0, b: 0, a: 1}
+  m_IndirectSpecularColor: {r: 0.17752925, g: 0.22225998, b: 0.30446166, a: 1}
   m_UseRadianceAmbientProbe: 0
 --- !u!157 &3
 LightmapSettings:
@@ -93,7 +93,8 @@ LightmapSettings:
     m_ExportTrainingData: 0
     m_TrainingDataDestination: TrainingData
     m_LightProbeSampleCountMultiplier: 4
-  m_LightingDataAsset: {fileID: 0}
+  m_LightingDataAsset: {fileID: 112000000, guid: 1247d823a1535b54d8921379f83d94ce,
+    type: 2}
   m_LightingSettings: {fileID: 4890085278179872738, guid: ca20235c7487cc3499bd5cc4d9e87f7f,
     type: 2}
 --- !u!196 &4
@@ -1361,7 +1362,7 @@ GameObject:
   - component: {fileID: 506001221}
   - component: {fileID: 506001220}
   m_Layer: 0
-  m_Name: Particle System (1)
+  m_Name: "Particle unlit\u7C92\u5B50"
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -7075,12 +7076,12 @@ GameObject:
   - component: {fileID: 845991187}
   - component: {fileID: 845991186}
   m_Layer: 0
-  m_Name: Particle System
+  m_Name: "unlit\u7C92\u5B50"
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!199 &845991186
 ParticleSystemRenderer:
   serializedVersion: 6
@@ -11889,7 +11890,7 @@ Transform:
   m_GameObject: {fileID: 845991185}
   serializedVersion: 2
   m_LocalRotation: {x: -0.7071068, y: 0, z: 0, w: 0.7071068}
-  m_LocalPosition: {x: -3.5140274, y: -2.0594573, z: 2.6460128}
+  m_LocalPosition: {x: -3.5140274, y: 0.20000005, z: 8.2}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -13964,7 +13965,7 @@ MeshRenderer:
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
-  - {fileID: 2100000, guid: c7462f88eeff5c643806ec26ec603cc5, type: 2}
+  - {fileID: 2100000, guid: 980dcd171c6fafa4c8137d15212dc32c, type: 2}
   m_StaticBatchInfo:
     firstSubMesh: 0
     subMeshCount: 0
@@ -15214,7 +15215,7 @@ MeshRenderer:
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
-  - {fileID: 2100000, guid: c7462f88eeff5c643806ec26ec603cc5, type: 2}
+  - {fileID: 2100000, guid: e0ab064373038104ba95d1e564339b34, type: 2}
   m_StaticBatchInfo:
     firstSubMesh: 0
     subMeshCount: 0
@@ -15321,7 +15322,7 @@ MeshRenderer:
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
-  - {fileID: 2100000, guid: c7462f88eeff5c643806ec26ec603cc5, type: 2}
+  - {fileID: 2100000, guid: 980dcd171c6fafa4c8137d15212dc32c, type: 2}
   m_StaticBatchInfo:
     firstSubMesh: 0
     subMeshCount: 0

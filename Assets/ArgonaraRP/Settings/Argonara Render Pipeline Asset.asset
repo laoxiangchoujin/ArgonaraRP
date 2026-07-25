@@ -12,13 +12,14 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b4bd54641cb139d4ea7eac33e6012d52, type: 3}
   m_Name: Argonara Render Pipeline Asset
   m_EditorClassIdentifier: 
+  cameraRendererType: 1
   cameraBuffer:
     allowHDR: 1
     copyColor: 1
     copyColorReflection: 0
     copyDepth: 1
     copyDepthReflection: 0
-    renderScale: 2
+    renderScale: 1
     bicubicRescaling: 1
   useDynamicBatching: 1
   useGPUInstancing: 1

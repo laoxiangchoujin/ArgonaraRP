@@ -4,7 +4,7 @@ using UnityEngine.Rendering;
 ///RenderPipeline需要按顺序处理每个相机，把这个责任转交给此类
 ///它大致相当于URP的scriptable renderer
 //这种方法，让每个相机在未来更容易支持不同的渲染方法，如一个渲染第一人称视图，一个渲染三维地图，或前向和延迟渲染
-public partial class CameraRenderer
+public partial class CameraRendererForward : CameraRendererBase
 {
     ScriptableRenderContext context;
     
@@ -33,7 +33,7 @@ public partial class CameraRenderer
     public const float renderScaleMin = 0.1f, renderScaleMax = 2f;
     
     ///绘制相机能看到的所有几何图形
-    public void Render(ScriptableRenderContext context, Camera camera, CameraBufferSettings bufferSettings,
+    public override void Render(ScriptableRenderContext context, Camera camera, CameraBufferSettings bufferSettings,
         bool useDynamicBatching, bool useGPUInsancing, bool useLightsPerObject, 
         ShadowSettings shadowSettings, PostFXSettings postFXSettings, int colorLUTResolution)
     {
@@ -317,7 +317,7 @@ public partial class CameraRenderer
 
     Texture2D missingTexture;//因为深度纹理是可选的，所以需要一个缺失的纹理，来避免没有深度纹理时的错误
     
-    public CameraRenderer(Shader shader)
+    public CameraRendererForward(Shader shader)
     {
         material = CoreUtils.CreateEngineMaterial(shader);//创建一个材质并隐藏，不会保存为资产
         missingTexture = new Texture2D(1, 1)
@@ -328,7 +328,7 @@ public partial class CameraRenderer
         missingTexture.Apply(true, true);
     }
 
-    public void Dispose()
+    public override void Dispose()
     {
         CoreUtils.Destroy(material);
         CoreUtils.Destroy(missingTexture);

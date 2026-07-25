@@ -119,6 +119,31 @@ Shader "Argonara RP/Lit"
 			#include "MetaPass.hlsl"
 			ENDHLSL
 		}
+
+		//Deferred GBuffer Pass
+		//针对Opaque Lit物体，把数据写入GBuffer的多张GT中，等待CameraRenderer的"Deferred Lighting" pass计算光照
+		Pass
+        {
+            Tags {"LightMode" = "ArgonaraGBuffer"}
+            Blend Off//GBuffer数据禁止混合，若混合则会污染GT
+            ZWrite On
+            
+            HLSLPROGRAM
+            #pragma target 3.5
+            
+            #pragma shader_feature _CLIPPING
+            #pragma shader_feature _PREMULTIPLY_ALPHA
+            #pragma multi_compile _ LIGHTMAP_ON//不是_LIGHTMAP_ON？
+            #pragma multi_compile _ LOD_FADE_CROSSFADE
+            #pragma shader_feature _NORMAL_MAP
+            #pragma shader_feature _MASK_MAP
+            #pragma shader_feature _DETAIL_MAP
+            #pragma multi_compile_instancing
+            #pragma vertex LitPassVertex
+            #pragma fragment LitPassFragmentGBuffer
+            #include "LitPass.hlsl"
+            ENDHLSL
+        }
     }
     CustomEditor "ArgonaraShaderGUI"//双引号里填这个ShaderGUI的类名就可，unity会自动搜索叫这个名字且继承了ShaderGUI类的class来重绘inspector
 }

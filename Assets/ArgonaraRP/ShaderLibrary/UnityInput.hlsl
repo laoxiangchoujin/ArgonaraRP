@@ -48,6 +48,7 @@ float4x4 unity_MatrixV;
 float4x4 glstate_matrix_projection;
 
 float4x4 unity_MatrixInvV;
+float4x4 unity_MatrixInvVP;
 float4x4 unity_prev_MatrixM;
 float4x4 unity_prev_MatrixIM;
 

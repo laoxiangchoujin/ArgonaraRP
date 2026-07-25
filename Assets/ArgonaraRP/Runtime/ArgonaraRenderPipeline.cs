@@ -16,7 +16,7 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
     int colorLUTResolution;
     
     //构造函数
-    public ArgonaraRenderPipeline(CameraBufferSettings cameraBufferSettings, bool useDynamicBatching, bool useGPUInstancing, bool useSRPBatcher,
+    public ArgonaraRenderPipeline(ArgonaraRenderPipelineAsset.CameraRendererType cameraRenderType, CameraBufferSettings cameraBufferSettings, bool useDynamicBatching, bool useGPUInstancing, bool useSRPBatcher,
         bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings, int colorLUTResolution,
         Shader cameraRendererShader)
     {
@@ -30,18 +30,26 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
         this.shadowSettings = shadowSettings;
         this.postFXSettings = postFXSettings;
         this.colorLUTResolution = colorLUTResolution;
-        renderer = new CameraRenderer(cameraRendererShader);
+
+        forwardRenderer = new CameraRendererForward(cameraRendererShader);
+        renderer = cameraRenderType == ArgonaraRenderPipelineAsset.CameraRendererType.forward
+            ? forwardRenderer
+            : new CameraRendererDeferred(cameraRendererShader);
 
         InitializeForEditor();
     }
 
-    CameraRenderer renderer;// = new CameraRenderer(); //它大致相当于URP的scriptable renderer
+    CameraRendererBase renderer;// = new CameraRenderer(); //它大致相当于URP的scriptable renderer
+    CameraRendererForward forwardRenderer; // 始终创建，供反射相机用
     
     protected override void Render(ScriptableRenderContext context, Camera[] cameras)
     {
         foreach (Camera camera in cameras)
         {
-            renderer.Render(context, camera, cameraBufferSettings,
+            var r = camera.cameraType == CameraType.Reflection
+                ? forwardRenderer//若是反射相机，哪怕管线设置为延迟，它自己也走前向
+                : renderer;
+            r.Render(context, camera, cameraBufferSettings,
                 useDynamicBatching, useGPUInstancing, useLightsPerObject, 
                 shadowSettings, postFXSettings, colorLUTResolution);
         }
@@ -52,5 +60,6 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
         base.Dispose(disposing);
         DisposeForEditor();
         renderer.Dispose();
+        forwardRenderer.Dispose();
     }
 }

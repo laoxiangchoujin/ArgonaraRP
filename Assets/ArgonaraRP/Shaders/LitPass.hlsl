@@ -109,8 +109,74 @@ float4 LitPassFragment(Varyings input) : SV_Target
     //所以这也就是，你现在不启用_MASK_MAP的时候，单独输出GetSmoothness就会报错的原因
    
     //return GetSmoothness(config);
+    //return float4(gi.diffuse,1);
+    //return float4(GetLighting(surface, brdf, gi),1.0);
+    //return float4(config.fragment.screenUV, 0.0, 1.0);
+     //return float4(input.positionWS.xyz * 0.1, 1.0);  // 世界坐标×缩放显示
+    //
+     //return float4(surface.viewDirection, 1.0);
+     //return float4(gi.specular, 1.0);
     
     return float4(color, GetFinalAlpha(surface.alpha));//不透明物体强制Alpha=1，保证相机叠加时Alpha值正确
+}
+
+//针对Opaque Lit物体，把数据写入GBuffer的多张GT中，等待CameraRenderer的"Deferred Lighting" pass计算光照
+void LitPassFragmentGBuffer(Varyings input,
+    out float4 GT1 : SV_Target0,
+    out float4 GT2 : SV_Target1,
+    out float4 GT3 : SV_Target2,
+    out float4 GT4 : SV_Target3,
+    out float4 GT5 : SV_Target4)
+{
+    UNITY_SETUP_INSTANCE_ID(input);
+    
+    InputConfig config = GetInputConfig(input.positionCS_SS, input.baseUV);
+    ClipLOD(config.fragment, unity_LODFade.x);
+    #if defined(_MASK_MAP)
+        config.useMask = true;
+    #endif
+    #if defined(_DETAIL_MAP)
+    config.detailUV = input.detailUV;
+    config.useDetail = true;
+    #endif
+    
+    float4 base = GetBase(config);
+    float3 color = base.rgb;
+    
+    #if defined(_CLIPPING)
+        clip(base.a - GetCutoff(config));
+    #endif
+    
+    //Surface surface;
+    //surface.position = input.positionWS;
+    #if defined(_NORMAL_MAP)
+        float3 normalWS = NormalTangentToWorld(GetNormalTS(config), input.normalWS, input.tangentWS);
+    #else
+        float3 normalWS = normalize(input.normalWS);
+    #endif
+    //surface.viewDirection = normalize(_WorldSpaceCameraPos - input.positionWS);
+    //surface.depth = - TransformWorldToView(input.positionWS).z;
+    
+    //surface.alpha = base.a;
+    float metallic = GetMetallic(config);
+    float occlusion = GetOcclusion(config);
+    float smoothness = GetSmoothness(config);
+    //surface.fresnelStrength = GetFresnel(config);
+    //surface.dither = InterleavedGradientNoise(config.fragment.positionSS, 0);
+    //surface.renderingLayerMask = asuint(unity_RenderingLayer.x);
+    
+    float3 emission = GetEmission(config);
+    
+    float3 indirectDiffuse = SampleLightmap(GI_FRAGMENT_DATA(input)) + SampleLightProbe(input.positionWS, normalWS);
+    
+    GT1 = float4(color, 1);
+    GT2 = float4(normalWS * 0.5 + 0.5, 0);
+    GT3 = float4(0,0,smoothness,metallic);
+    GT4 = float4(emission,occlusion);
+    
+    
+    GT5 = float4(indirectDiffuse, 0);
+    //return float4(color, GetFinalAlpha(surface.alpha));//不透明物体强制Alpha=1，保证相机叠加时Alpha值正确
 }
 
 #endif

@@ -33,7 +33,7 @@ public class CameraSettings
     
     public RenderScaleMode renderScaleMode = RenderScaleMode.Inherit;
 
-    [Range(CameraRenderer.renderScaleMin, CameraRenderer.renderScaleMax)] public float renderScale = 1f;
+    [Range(CameraRendererForward.renderScaleMin, CameraRendererForward.renderScaleMax)] public float renderScale = 1f;
 
     public float GetRenderScale(float scale)
     {
