@@ -36,7 +36,7 @@ float4 MetaPassFragment (Varyings input) : SV_TARGET {
 	float4 base = GetBase(config);
 	Surface surface;
 	ZERO_INITIALIZE(Surface, surface);
-	surface.color = base.rgb;
+	surface.albedo = base.rgb;
 	surface.metallic = GetMetallic(config);
 	surface.smoothness = GetSmoothness(config);
 	BRDF brdf = GetBRDF(surface);
@@ -44,8 +44,9 @@ float4 MetaPassFragment (Varyings input) : SV_TARGET {
 	
 	if (unity_MetaFragmentControl.x)//若有x，则请求漫反射
 	{
-		meta = float4(brdf.diffuse, 1.0);
-		meta.rgb += brdf.specular * brdf.roughness * 0.5;//添加0.5*经过粗糙度缩放的specular来提升结果。背后的理念是高度镜面反射但粗糙的材质也会传递一些间接光//不用smoothness是因为，是间接光
+		float oneMinusReflectivity = 0.96 * (1 - surface.metallic);//这个diffuse乘了kd，才物理正确，这个是简化版的，与什么方向都无关的。这个目前只在这里用到，不放进BRDF结构体里了。
+		meta = float4(brdf.albedo * oneMinusReflectivity, 1.0);
+		meta.rgb += brdf.F0 * brdf.roughness * 0.5;//添加0.5*经过粗糙度缩放的specular来提升结果。背后的理念是高度镜面反射但粗糙的材质也会传递一些间接光//不用smoothness是因为，是间接光
 		meta.rgb += min(PositivePow(meta.rgb, unity_OneOverOutputBoost), unity_MaxOutputValue);
 	}
 	else if (unity_MetaFragmentControl.y) {//自发光光照是通过单独的通道进行烘焙的，材质面板的"全局光照"设为baked的，会另外执行一次自发光的烘焙

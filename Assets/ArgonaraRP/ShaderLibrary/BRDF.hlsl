@@ -1,64 +1,148 @@
 #ifndef CUSTOM_BRDF_INCLUDED
 #define CUSTOM_BRDF_INCLUDED
 
-#define MIN_REFLECTIVITY 0.04//完全非金属的反射率为0.04， 这就是F0
+#define kDielectricSpec half4(0.04, 0.04, 0.04, 1.0 - 0.04)
 
+//BRDF结构体，只存计算所需的中间值，避免重复计算，then获取直接光和间接光，在DirectBRDF和IndirectBRDF两个函数
 struct BRDF
 {
-    float3 diffuse;
-    float3 specular;
+    //float directKd;//直接光漫反射系数     oneMinusReflectivity，现在在MetaPass的漫反射计算中，这个简化的Kd，现在不用于实时计算，所以这里没有
+    float3 albedo;//是否预乘alpha，会造成albedo是否受surface.alpha影响
+    float3 F0;
+    
+    float perceptualRoughness;
     float roughness;
-    float perceptualRoughness;//用这个粗糙度，获取镜面反射的mip级别，高mip级别模拟模糊的反射
-    float fresnel;
+    float roughnessSquare;
 };
 
-float OneMinusReflectivity(float metallic)//返回的是1-Ks，也就是Kd
+//--------------直接光漫反射----------------
+
+//获取直接光Kd
+float3 GetDirectKd(float3 F, float metallic)//F是镜面BRDF高光的fresnel项
 {
-    float range = 1.0 - MIN_REFLECTIVITY;
-    return range * (1.0 - metallic);
+    return (1 - F) * (1.0 - metallic);
+}
+//不需要去算Ks，因为高光项里面就有一个F，那就是Ks，再额外乘会出错
+
+float3 GetDirectDiffuse(float3 Kd, float3 albedo)
+{
+    return Kd * albedo;
 }
 
-//完整的Cook-Torrance 高光公式是：f_specular = D · F · G / (4 · (N·L) · (N·V))
-float SpecularStrength(Surface surface, BRDF brdf, Light light)//这不是一个完整的cook-toorance，只是一个够用就行的简单版本
+//--------------直接光高光----------------
+float DistributionGGX(float nh, float squareRoughness) {
+    return squareRoughness / pow(pow(nh, 2) * (squareRoughness - 1) + 1, 2)/UNITY_PI;
+}
+			
+float GeometrySmith(float nl, float nv, float kInDirectLight) {
+    float GLeft = nl / lerp(nl, 1, kInDirectLight);
+    float GRight = nv / lerp(nv, 1, kInDirectLight);
+    float G = GLeft * GRight;
+    return G;
+}
+			
+//直接光用到的F项，和光线方向有关      direct use hv，微观
+float3 fresnelSchlick(float vh, float3 F0) {
+    return F0 + (1 - F0) * exp2((-5.55473 * vh - 6.98316) * vh);
+}
+			
+//间接光用到的粗糙度版本菲涅尔        indirect use nv, 宏观
+float3 fresnelSchlickRoughness(float nv, float3 F0,float roughness)
 {
-    float3 h = SafeNormalize(light.direction + surface.viewDirection);
-    float nh2 = Square(saturate(dot(surface.normal, h)));//NOH的平方
-    float lh2 = Square(saturate(dot(light.direction, h)));//LOH的平方
-    float r2 = Square(brdf.roughness);//粗糙度的平方
-    float d2 = Square(nh2 * (r2 - 1.0) + 1.00001);//ggx ndf的分母的一部分
-    float normalization = brdf.roughness * 4.0 + 2.0;//对光强的一个归一化拟合
-    return r2 / (d2 * max(0.1, lh2) * normalization);
+    float3 F = exp2((-5.55473 * nv - 6.98316 ) * nv);
+    return F0 + F * saturate(1 - roughness - F0);
 }
 
-//计算高光结果
+float3 GetDirectSpecular(float D, float G, float3 F, float nv, float nl)
+{
+    return D * G * F * (0.25) / (nv * nl);
+}
+
+//直接光BRDF = 直接光diffuse + 直接光specular (无光照)
 float3 DirectBRDF(Surface surface, BRDF brdf, Light light)
 {
-    return SpecularStrength(surface, brdf, light) * brdf.specular + brdf.diffuse;
+    float3 halfVector = normalize(light.direction + surface.viewDirection);
+    float nl = max(saturate(dot(surface.normal, light.direction)), 0.000001);//防止除0
+    float nv = max(saturate(dot(surface.normal, surface.viewDirection)), 0.000001);
+    float vh = max(saturate(dot(surface.viewDirection, halfVector)), 0.000001);
+    float nh = max(saturate(dot(surface.normal, halfVector)), 0.000001);
+    
+    //先算DGF
+    float D = DistributionGGX(nh, brdf.roughnessSquare);
+    float kInDirectLight = pow(brdf.roughnessSquare + 1, 2) / 8;
+    float G = GeometrySmith(nl, nv, kInDirectLight);
+    float3 F0 = brdf.F0;
+    float3 F = fresnelSchlick(vh, F0);
+    
+    float3 directSpecular = GetDirectSpecular(D, G, F, nv, nl);
+    
+    float3 Kd = GetDirectKd(F, surface.metallic);
+    float3 directDiffuse = GetDirectDiffuse(Kd, brdf.albedo);
+    
+    return directDiffuse + directSpecular;
 }
 
-float3 IndirectBRDF(Surface surface, BRDF brdf, float3 diffuse, float3 specular)//好像说，这里的diffuse和specular是全局光照的结果？
+//---------------间接光漫反射+高光-----------------
+
+float OneMinusReflectivityMetallic(float metallic)
 {
-    float fresnelStrength = surface.fresnelStrength * Pow4(1.0 - saturate(dot(surface.normal, surface.viewDirection)));
-    float3 reflection = specular * lerp(brdf.specular, brdf.fresnel, fresnelStrength);
-    reflection /= brdf.roughness * brdf.roughness + 1.0;//粗糙度会让反射发生散射，这里，最大粗糙度让反射减半
-    return (diffuse * brdf.diffuse + reflection) * surface.occlusion;
+    half oneMinusDielectricSpec = kDielectricSpec.a;
+    return oneMinusDielectricSpec - metallic * oneMinusDielectricSpec;
 }
 
-BRDF GetBRDF(inout Surface surface, bool applyAlphaToDiffuse = false)//我们可能会在此修改surface，故改为inout
+//间接高光，曲线拟合，近似LUT的效果
+float3 IndirSpecFactor(float roughnessSquare,float smoothness,float metallic,float3 F0,float NdotV)
+{
+    float surfaceReduction = 1/(roughnessSquare+1);//表面亮度降低。当粗糙度更大，高光被摊得更开，单点亮度更小，then整体亮度factor变低
+				
+    half oneMinusReflectivity = OneMinusReflectivityMetallic(metallic);//返回0.96*(1-metallic)
+    half reflectivity = half(1.0) - oneMinusReflectivity;//返回0.04+0.96*metaiilc，就是金属度为0，就是非金属F0为0.04，全金属就是金属的F0为1
+				
+    //grazing，轻擦、擦破、擦过
+    half grazingTerm = saturate(smoothness + reflectivity);
+    float fresnelTerm = Pow4(1.0-NdotV);//视线边缘，菲涅尔效果最强
+				
+    return surfaceReduction * lerp(F0,grazingTerm,fresnelTerm);//直射时候系数就是F0正视角反射率，掠射的时候系数是算出的grazingTerm“掠射角反射率”的经验近似
+}
+
+//间接光BRDF = 间接光diffuse + 间接光specular
+float3 IndirectBRDF(Surface surface, BRDF brdf, float3 giDiffuse, float3 giSpecular)
+{
+    float nv = max(saturate(dot(surface.normal, surface.viewDirection)), 0.000001);
+    float3 F = fresnelSchlickRoughness(nv, brdf.F0, brdf.roughness);
+    float3 k_d = (1.0 - F) * (1.0 - surface.metallic);
+    //间接漫反射
+    float3 indirectDiffuse = giDiffuse * k_d * brdf.albedo;
+    //间接高光
+    float3 indirectSpecFactor = IndirSpecFactor(brdf.roughnessSquare, surface.smoothness, surface.metallic, brdf.F0, nv);
+    float3 indirectSpecular = giSpecular * indirectSpecFactor;
+    
+    return (indirectDiffuse + indirectSpecular) * surface.occlusion;
+}
+
+
+
+BRDF GetBRDF(Surface surface, bool applyAlphaToDiffuse = false)//我们可能会在此修改surface，故改为inout
 {
     BRDF brdf;
-    float oneMinusReflectivity = OneMinusReflectivity(surface.metallic);
-    brdf.diffuse = surface.color * oneMinusReflectivity;//若金属度为1，duffuse为0， 若金属度为0，diffuse为color*0.96
+    
+    //基础基础信息
+    brdf.perceptualRoughness = PerceptualSmoothnessToPerceptualRoughness(surface.smoothness);//1-perceptual smoothness
+    brdf.roughness = PerceptualRoughnessToRoughness(brdf.perceptualRoughness);//对perceptual roughness平方
+    brdf.roughnessSquare = pow(lerp(0.002, 1, brdf.roughness), 2);
+    
+    brdf.F0 = lerp(kDielectricSpec.rgb, surface.albedo, surface.metallic);
+    
+    //oneMinusReflectivity，，，是原本的简化版Kd，等于0.96 * (1 - metallic)，现已被替代，故BRDF结构体没存它，但MetaPass的漫反射光照计算在用这个
+    
+    brdf.albedo = surface.albedo;
     if (applyAlphaToDiffuse) {//若启用，材质会像玻璃，高光反射不受alpha影响，默认false
         //漫反射会根据alpha褪色，但是对于完全透明玻璃，光线要么穿过，要么被反射，因此镜面反射不会褪色
         //因此我们不能用SrcAlpha,OneMinusSrcAlpha，改为One,OneMinusSrcAlpha，这样duffuse和specular都不因GPU透明混合而褪色了
         //所以，对diffuse预乘alpha混合
-        brdf.diffuse *= surface.alpha;
+        brdf.albedo *= surface.alpha;
     }
-    brdf.specular = lerp(MIN_REFLECTIVITY, surface.color, surface.metallic);//若金属度为1，specular为color，   若金属度为0，specular为0.04     这个值就是Ks
-    brdf.perceptualRoughness =PerceptualSmoothnessToPerceptualRoughness(surface.smoothness);//1-perceptual smoothness
-    brdf.roughness = PerceptualRoughnessToRoughness(brdf.perceptualRoughness);//对perceptual roughness平方
-    brdf.fresnel = saturate(surface.smoothness + 1.0 - oneMinusReflectivity);//?
+    
     return brdf;
 }
 

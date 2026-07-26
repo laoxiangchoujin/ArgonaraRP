@@ -52,4 +52,11 @@ float4x4 unity_MatrixInvVP;
 float4x4 unity_prev_MatrixM;
 float4x4 unity_prev_MatrixIM;
 
+
+
+//----------------其他自己define的重要的全局参数--------------
+#define UNITY_PI            3.14159265359f
+#define UNITY_TWO_PI        6.28318530718f
+#define UNITY_INV_PI        0.31830988618f
+
 #endif

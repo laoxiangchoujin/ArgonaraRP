@@ -136,6 +136,7 @@ float4 SampleBakedShadows(float2 lightMapUV, Surface surfaceWS)
 
 float3 SampleEnvironment (Surface surfaceWS, BRDF brdf) {
 	float3 uvw = reflect(-surfaceWS.viewDirection, surfaceWS.normal);
+	
 	float mip = PerceptualRoughnessToMipmapLevel(brdf.perceptualRoughness);
 	float4 environment = SAMPLE_TEXTURECUBE_LOD(unity_SpecCube0, samplerunity_SpecCube0, uvw, mip);
 	return DecodeHDREnvironment(environment, unity_SpecCube0_HDR);;

@@ -55,64 +55,85 @@ float CopyDepthPassFragment(Varyings input) : SV_Depth
 #include "../ShaderLibrary/GI.hlsl"
 #include "../ShaderLibrary/Lighting.hlsl"
 
+//GBuffer全屏三角光照计算，处理Opaque物体，应针对不同着色模型有不同处理
 float4 DeferredLightPassFragment(Varyings input) : SV_Target
 {
     float2 uv = input.screenUV;
     
-    Surface surface;
-    //深度图重建世界坐标
-    float depth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
-    float4 posClip = float4(uv * 2 - 1, depth, 1);
-    #if UNITY_UV_STARTS_AT_TOP
-    posClip.y = -posClip.y;  // 抵消 DefaultPassVertex 的 UV 翻转
-    #endif
-    float4 posWS = mul(UNITY_MATRIX_I_VP, posClip);
-    posWS /= posWS.w;
-    surface.position = posWS.xyz;
+    //先获取必需数据
+    float4 GT1 = SAMPLE_TEXTURE2D(_GBuffer1, sampler_linear_clamp, uv);
+    float3 color = GT1.rgb;
+    uint shadingModelID = (uint)(GT1.a * 255.0 + 0.5) >> 4;
+    
+    //return float4(GT1.a*10, 0, 0, 1);
+    //return float4(((float)shadingModelID).xxx, 1.0);
+    
+    float3 GT4 = SAMPLE_TEXTURE2D(_GBuffer4, sampler_linear_clamp, uv).rgb;
+    float3 emission = GT4.rgb;
+    
+    float3 output = 0.0;
+    
+    //0.简单处理unlit
+    
+    if (shadingModelID == 0)
+    {
+        output = color + emission;
+        return float4(output, 1.0);
+    }
+    else if (shadingModelID == 1)
+    {
+        Surface surface;
+        //深度图重建世界坐标
+        float GTDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
+        float4 posClip = float4(uv * 2 - 1, GTDepth, 1);
+        #if UNITY_UV_STARTS_AT_TOP
+        posClip.y = -posClip.y;  // 抵消 DefaultPassVertex 的 UV 翻转
+        #endif
+        float4 posWS = mul(UNITY_MATRIX_I_VP, posClip);
+        posWS /= posWS.w;
+        surface.position = posWS.xyz;
         
-    //解码法线（GT1存储法线 * 0.5 + 0.5）
-    float3 normal = SAMPLE_TEXTURE2D(_GBuffer2, sampler_linear_clamp, uv).xyz * 2.0 - 1.0;
-    normal = normalize(normal);
-    surface.normal = normal;
-    surface.interpolatedNormal = normal;
-    surface.viewDirection = normalize(_WorldSpaceCameraPos - surface.position);
-    surface.depth = depth;//存疑？
-    surface.color = SAMPLE_TEXTURE2D(_GBuffer1, sampler_linear_clamp, uv).rgb;
-    surface.alpha = 1.0;
+        //解码法线（GT1存储法线 * 0.5 + 0.5）
+        float3 normal = SAMPLE_TEXTURE2D(_GBuffer2, sampler_linear_clamp, uv).xyz * 2.0 - 1.0;
+        normal = normalize(normal);
+        surface.normal = normal;
+        surface.interpolatedNormal = normal;
+        surface.viewDirection = normalize(_WorldSpaceCameraPos - surface.position);
+        surface.depth = GTDepth;//存疑？
+        surface.albedo = SAMPLE_TEXTURE2D(_GBuffer1, sampler_linear_clamp, uv).rgb;
+        surface.alpha = 1.0;
     
-    float4 motionVec_Smoothness_Metallic = SAMPLE_TEXTURE2D(_GBuffer3, sampler_linear_clamp, uv);
-    surface.metallic = motionVec_Smoothness_Metallic.w;
-    surface.smoothness = motionVec_Smoothness_Metallic.z;
+        float4 GT3 = SAMPLE_TEXTURE2D(_GBuffer3, sampler_linear_clamp, uv);
+        surface.smoothness = GT3.x;
+        surface.metallic = GT3.y;
+        surface.occlusion = GT3.z;
     
-    float4 emission_Occlusion = SAMPLE_TEXTURE2D(_GBuffer4, sampler_linear_clamp, uv);
-    surface.occlusion = emission_Occlusion.w;
+        float4 GT4 = SAMPLE_TEXTURE2D(_GBuffer4, sampler_linear_clamp, uv);
+        
+        //surface.fresnelStrength = 1;
+        surface.dither = InterleavedGradientNoise(uv, 0);
+        surface.renderingLayerMask = asuint(unity_RenderingLayer.x);
     
-    surface.fresnelStrength = 1;
-    surface.dither = InterleavedGradientNoise(uv, 0);
-    surface.renderingLayerMask = asuint(unity_RenderingLayer.x);
+        BRDF brdf = GetBRDF(surface, false);
     
-    BRDF brdf = GetBRDF(surface, false);
+        float3 GT5 = SAMPLE_TEXTURE2D(_GBuffer5, sampler_linear_clamp, uv);
+        float3 indirectDiffuse = GT5.rgb;
     
-    float3 indirectDiffuse = SAMPLE_TEXTURE2D(_GBuffer5, sampler_linear_clamp, uv);
-    
-    //gi咋算？
-    GI gi = GetGI(indirectDiffuse, surface, brdf);
-    //gi.specular = float3(0,0,0);
+        //gi咋算？
+        GI gi = GetGI(indirectDiffuse, surface, brdf);
+        //gi.specular = float3(0,0,0);
     
     
-    float3 color = GetLighting(surface, brdf, gi);
-    float3 emission = emission_Occlusion.xyz;
-    color += emission;
+        color = GetLighting(surface, brdf, gi);
+        emission = GT4.xyz;
+        color += emission;
     
-    //return float4(uv, 0 ,1);
-    /// return float4(posClip.xyz, 1);
-    //  return float4(depth.xxx, 1.0);
-     //return float4(posWS.xyz *0.1 , 1.0);  // 世界坐标×缩放显示
-    //
-     //return float4(surface.viewDirection, 1.0);
-     //return float4(gi.specular, 1.0);
-    // return float4(GetLighting(surface, brdf, gi), 1.0);
-    return float4(color, 1.0);
+        return float4(color, 1.0);
+    }
+    
+    //说明是出错的，返回一个红色
+    output = float3(1,0,0);
+    return float4(output, 1.0);
 }
 
 #endif

@@ -73,12 +73,55 @@ float4 UnlitPassFragment(Varyings input) : SV_Target
     #endif
     #if defined(_DISTORTION)
         float2 distortion = GetDistortion(config) * base.a;
-    base.rgb = lerp(GetBufferColor(config.fragment, distortion).rgb, base.rgb,
+        base.rgb = lerp(GetBufferColor(config.fragment, distortion).rgb, base.rgb,
         saturate(base.a - GetDistortionBlend(config)));
     #endif
     
     base.rgb += GetEmission(config);
     return float4(base.rgb, GetFinalAlpha(base.a));//不透明物体强制Alpha=1，保证相机叠加时Alpha值正确
+}
+
+//Unlit ShadingModelID = 0
+void UnlitPassFragmentGBuffer(Varyings input, 
+    out float4 GT1 : SV_Target0,
+    out float3 GT4 : SV_Target3)
+{
+    UNITY_SETUP_INSTANCE_ID(input);//frag里，使索引可用
+    
+    InputConfig config = GetInputConfig(input.positionCS_SS, input.baseUV);
+    
+    #if defined(_VERTEX_COLORS)
+        config.color = input.color;
+    #endif
+    #if defined(_FLIPBOOK_BLENDING)
+        config.flipbookUVB = input.flipbookUVB;
+        config.flipbookBlending = true;
+    #endif
+    #if defined(_NEAR_FADE)
+        config.nearFade = true;
+    #endif
+    #if defined(_SOFT_PARTICLES)
+        config.softParticles = true;
+    #endif
+    
+    float4 base = GetBase(config);
+    
+    #if defined(_CLIPPING)
+        clip(base.a - GetCutoff(config));
+    #endif
+    #if defined(_DISTORTION)
+        float2 distortion = GetDistortion(config) * base.a;
+        base.rgb = lerp(GetBufferColor(config.fragment, distortion).rgb, base.rgb,
+        saturate(base.a - GetDistortionBlend(config)));
+    #endif
+    
+    float3 color = base.rgb;
+    uint shadingModelID4_null4 = ((uint)0 << 4)/255.0;
+    GT1 = float4(color, shadingModelID4_null4);
+    float3 emission = GetEmission(config);
+    GT4 = float3(emission);
+    // base.rgb += GetEmission(config);
+    // return float4(base.rgb, GetFinalAlpha(base.a));//不透明物体强制Alpha=1，保证相机叠加时Alpha值正确
 }
 
 #endif//如果包含了，就跳过

@@ -11,7 +11,7 @@ Shader "Argonara RP/Lit"
     	_Metallic ("Metallic", Range(0, 1)) = 0
     	_Occlusion ("Occlusion", Range(0, 1)) = 1
 		_Smoothness ("Smoothness", Range(0, 1)) = 0.5
-    	_Fresnel ("Fresnel", Range(0, 1)) = 1
+    	//_Fresnel ("Fresnel", Range(0, 1)) = 1
     	
     	
     	[Toggle(_MASK_MAP)] _MaskMapToggle ("Mask Map", Float) = 0

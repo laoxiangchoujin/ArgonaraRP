@@ -83,12 +83,12 @@ float4 LitPassFragment(Varyings input) : SV_Target
     #endif
     surface.viewDirection = normalize(_WorldSpaceCameraPos - input.positionWS);
     surface.depth = - TransformWorldToView(input.positionWS).z;
-    surface.color = base.rgb;
+    surface.albedo = base.rgb;
     surface.alpha = base.a;
     surface.metallic = GetMetallic(config);
     surface.occlusion = GetOcclusion(config);
     surface.smoothness = GetSmoothness(config);
-    surface.fresnelStrength = GetFresnel(config);
+    //surface.fresnelStrength = GetFresnel(config);
     surface.dither = InterleavedGradientNoise(config.fragment.positionSS, 0);
     surface.renderingLayerMask = asuint(unity_RenderingLayer.x);
     
@@ -120,12 +120,13 @@ float4 LitPassFragment(Varyings input) : SV_Target
     return float4(color, GetFinalAlpha(surface.alpha));//不透明物体强制Alpha=1，保证相机叠加时Alpha值正确
 }
 
+//Lit ShadingModelID = 1
 //针对Opaque Lit物体，把数据写入GBuffer的多张GT中，等待CameraRenderer的"Deferred Lighting" pass计算光照
 void LitPassFragmentGBuffer(Varyings input,
     out float4 GT1 : SV_Target0,
     out float4 GT2 : SV_Target1,
     out float4 GT3 : SV_Target2,
-    out float4 GT4 : SV_Target3,
+    out float3 GT4 : SV_Target3,
     out float4 GT5 : SV_Target4)
 {
     UNITY_SETUP_INSTANCE_ID(input);
@@ -169,10 +170,11 @@ void LitPassFragmentGBuffer(Varyings input,
     
     float3 indirectDiffuse = SampleLightmap(GI_FRAGMENT_DATA(input)) + SampleLightProbe(input.positionWS, normalWS);
     
-    GT1 = float4(color, 1);
-    GT2 = float4(normalWS * 0.5 + 0.5, 0);
-    GT3 = float4(0,0,smoothness,metallic);
-    GT4 = float4(emission,occlusion);
+    float shadingModelID4_null4 = ((uint)1 << 4)/255.0;
+    GT1 = float4(color, shadingModelID4_null4);
+    GT2 = float4(normalWS * 0.5 + 0.5, 0.0);
+    GT3 = float4(smoothness, metallic, occlusion, 0.0);
+    GT4 = float3(emission);
     
     
     GT5 = float4(indirectDiffuse, 0);

@@ -70,6 +70,7 @@ partial class CameraRendererDeferred
             if (useIntermediateBuffer)
             {
                 Draw(gDepthId, BuiltinRenderTextureType.CameraTarget, true);
+                buffer.name = "Before PostFX";
                 ExecuteBuffer();
             }
             context.DrawGizmos(camera, GizmoSubset.PreImageEffects);
@@ -80,12 +81,19 @@ partial class CameraRendererDeferred
     {
         if (Handles.ShouldRenderGizmos())
         {
+            buffer.name = "After PostFX";
+            buffer.BeginSample("After PostFX");
+            
             if (postFXStack.IsActive)
             {
                 Draw(gDepthId, BuiltinRenderTextureType.CameraTarget, true);
-                ExecuteBuffer();
+                ExecuteBuffer(); // ← 提交BeginSample+DrawProcedural
             }
-            context.DrawGizmos(camera, GizmoSubset.PostImageEffects);
+
+            context.DrawGizmos(camera, GizmoSubset.PostImageEffects); // ← 此时sample是打开状态
+
+            buffer.EndSample("After PostFX"); // ← 关闭sample
+            ExecuteBuffer();
         }
     }
     

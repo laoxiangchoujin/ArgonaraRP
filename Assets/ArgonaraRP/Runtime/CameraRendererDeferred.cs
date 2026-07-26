@@ -173,7 +173,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
         
         CameraClearFlags flags = camera.clearFlags;//它有4个值，1~4是Skybox,Color,Depth,Nothing，
 
-        CreateGBuffers();
+        AllocateGBuffers();
 
         useIntermediateBuffer = useScaleRendering || 
                                 useColorTexture || 
@@ -228,21 +228,29 @@ public partial class CameraRendererDeferred : CameraRendererBase
         litShaderTagId = new ShaderTagId("ArgonaraLit"),
         gBufferShaderTagId = new ShaderTagId("ArgonaraGBuffer");
 
-    void CreateGBuffers()
+    //目前的GBuffer结构
+    // GT   格式             R                G               B               A                             总 bit
+    // 1    ARGB32 8×4      albedo          albedo          albedo          ShadingModelID(4b)+空(4b)        32
+    // 2    ARGB2101010     normal.x        normal.y        normal.z        _ReceiveShadows(1b)+空(1b)       32
+    // 3    ARGB32 8×4      smoothness      metallic        occlusion       空                               32
+    // 4    RGB111110       emission(11b)   emission(11b)   emission(10b)   —                                32
+    // 5    ARGB32 8×4      indirectDiffuse indirectDiffuse indirectDiffuse 空                               32
+    
+    void AllocateGBuffers()
     {
         //声明和创建GBuffer纹理
-        buffer.GetTemporaryRT(gDepthId, bufferSize.x, bufferSize.y, 32, FilterMode.Point, RenderTextureFormat.Depth,
-            RenderTextureReadWrite.Linear); //深度图
+        buffer.GetTemporaryRT(gDepthId, bufferSize.x, bufferSize.y, 32, FilterMode.Point, 
+            RenderTextureFormat.Depth, RenderTextureReadWrite.Linear); //深度图
         buffer.GetTemporaryRT(gBuffersId[0], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
-            RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear); //GT1，xyz是颜色
+            RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear); //GT1，xyz是颜色，w前4位是ShadingModelID，后四位空
         buffer.GetTemporaryRT(gBuffersId[1], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
-            RenderTextureFormat.ARGB2101010, RenderTextureReadWrite.Linear); //GT2，xyz是法线
+            RenderTextureFormat.ARGB2101010, RenderTextureReadWrite.Linear); //GT2，xyz是法线，w前一位是是否_ReceiveShadows，后一位空
         buffer.GetTemporaryRT(gBuffersId[2], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
-            RenderTextureFormat.ARGB64, RenderTextureReadWrite.Linear); //GT3，xy是运动向量，zw是smoothness,metallic
+            RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear); //GT3，xyz是smoothness,metallic,occlusion，w是空
         buffer.GetTemporaryRT(gBuffersId[3], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
-            RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear); //GT4，xyz是emission，w是occlusion
+            RenderTextureFormat.RGB111110Float, RenderTextureReadWrite.Linear); //GT4，xyz是emission(11，11，10)，没有w通道
         buffer.GetTemporaryRT(gBuffersId[4], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
-            RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear); //GT5，目前暂时存在，xyz是indirect diffuse
+            RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear); //GT5，目前暂时存在，xyz是indirect diffuse，w是空
 
     }
     
@@ -301,8 +309,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
         ExecuteBuffer();
         
         //将GBuffer传入GPU
-        //buffer.SetGlobalTexture(gDepthId, gDepthId);
-        CopyDepthAttachments();//不应该在这复制深度
+        CopyDepthAttachments();//给光照Pass重建posWS     ！用于trans读取的深度纹理是截止到画完GBuffer！
         buffer.SetGlobalTexture(depthTextureId, depthTextureId);
         foreach(var gBufferId in gBuffersId)
             buffer.SetGlobalTexture(gBufferId, gBufferId);
@@ -321,14 +328,17 @@ public partial class CameraRendererDeferred : CameraRendererBase
         buffer.EndSample("GBuffer");
         buffer.name = bufferName;
         ExecuteBuffer();
+        
+        //绘制天空盒
+        context.DrawSkybox(camera);//关于它，为什么相机标记为clearFlags为color时看不到天空盒？明明天空盒在默认颜色之后渲染，也不清除天空盒，为啥只能看到颜色？，，，发现clearFlags为color的时候，帧调试器里没有drawSkybox，那就是自动跳过了，大概率是底层C++固定做的判断
+        
+        if (useColorTexture)
+        {
+            CopyAttachments();//用于trans读取的颜色纹理内容是截止到画完天空盒
+        }
 
-        //恢复渲染目标回colorTexture，它存的应该是经过光照计算的opaque lit+opaque unlit的结果
-        // buffer.SetRenderTarget(colorAttachmentId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
-        //     gDepthId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
-        // ExecuteBuffer();
-
-        //画opaque unlit——新建DrawingSettings，base pass用unlitShaderTagId
-        var unlitDrawingSettings = new DrawingSettings(unlitShaderTagId, sortingSettings)
+        //画transparent——第2个DrawingSettings，目前有transparnet unlit和lit
+        var transparentDrawingSettings = new DrawingSettings(unlitShaderTagId, sortingSettings)
         {
             enableDynamicBatching = useDynamicBatching,
             enableInstancing = useGPUInsancing,
@@ -341,26 +351,17 @@ public partial class CameraRendererDeferred : CameraRendererBase
                             PerObjectData.OcclusionProbeProxyVolume |
                             lightsPerObjectFlags
         };
-        context.DrawRenderers(cullingResults, ref unlitDrawingSettings, ref filteringSettings);
-        
-        //绘制天空盒
-        context.DrawSkybox(camera);//关于它，为什么相机标记为clearFlags为color时看不到天空盒？明明天空盒在默认颜色之后渲染，也不清除天空盒，为啥只能看到颜色？，，，发现clearFlags为color的时候，帧调试器里没有drawSkybox，那就是自动跳过了，大概率是底层C++固定做的判断
-        
-        if (useColorTexture)
-        {
-            CopyAttachments();
-            CopyDepthAttachments();
-        }
+        // context.DrawRenderers(cullingResults, ref unlitDrawingSettings, ref filteringSettings);
         
         //先绘制opaque，再绘制skybox，然后绘制transparent   避免skybox盖住半透物体
         //trans的排序用CommonTransparent，从后往前绘制，和opaque的前往后相反
         //trans咋排序对性能没影响+必须从后往前才有可能正确混合。
         //但如此不能保证正确混合，因为排序是基于对象的位置，针对每个对象排序的。交叉和大的trans物体还是可能错误排序，或许可以把大物体切割成多个小物体来尝试接近，，，能这样干吗？
         sortingSettings.criteria = SortingCriteria.CommonTransparent;
-        unlitDrawingSettings.sortingSettings = sortingSettings;
-        unlitDrawingSettings.SetShaderPassName(1, litShaderTagId);
+        transparentDrawingSettings.sortingSettings = sortingSettings;
+        transparentDrawingSettings.SetShaderPassName(1, litShaderTagId);
         filteringSettings.renderQueueRange = RenderQueueRange.transparent;//就是靠这句判断是不是transparent，对于deferred，opaque lit和opaque clip lit写入GBuffer，transparent lit和其他trans搁这
-        context.DrawRenderers(cullingResults,ref unlitDrawingSettings, ref filteringSettings);
+        context.DrawRenderers(cullingResults,ref transparentDrawingSettings, ref filteringSettings);
     }
 
     ///用于释放申请的纹理等

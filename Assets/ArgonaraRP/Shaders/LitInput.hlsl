@@ -30,7 +30,7 @@ UNITY_INSTANCING_BUFFER_START(UnityPerMaterial)
 	UNITY_DEFINE_INSTANCED_PROP(float, _DetailNormalScale)
 	UNITY_DEFINE_INSTANCED_PROP(float, _NormalScale)
 	UNITY_DEFINE_INSTANCED_PROP(float, _Smoothness)
-	UNITY_DEFINE_INSTANCED_PROP(float, _Fresnel)
+	//UNITY_DEFINE_INSTANCED_PROP(float, _Fresnel)
 	UNITY_DEFINE_INSTANCED_PROP(float, _ZWrite)
 UNITY_INSTANCING_BUFFER_END(UnityPerMaterial)
 
@@ -128,9 +128,9 @@ float3 GetEmission (InputConfig c) {
 	return map.rgb * color.rgb;
 }
 
-float GetFresnel (InputConfig c) {
-	return INPUT_PROP(_Fresnel);
-}
+// float GetFresnel (InputConfig c) {
+// 	return INPUT_PROP(_Fresnel);
+// }
 
 float GetFinalAlpha(float alpha)
 {

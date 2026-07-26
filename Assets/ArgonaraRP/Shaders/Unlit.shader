@@ -70,6 +70,22 @@ Shader "Argonara RP/Unlit"
 			#include "MetaPass.hlsl"
 			ENDHLSL
 		}
+
+		Pass
+        {
+            Tags{"LightMode" = "ArgonaraGBuffer"}
+            Blend Off
+            ZWrite On
+            
+            HLSLPROGRAM
+            #pragma shader_feature _CLIPPING
+            #pragma shader_feature _VERTEX_COLORS
+            #pragma multi_compile_instancing//它一定要写在vert和frag前面吗？为啥？
+            #pragma vertex UnlitPassVertex
+            #pragma fragment UnlitPassFragmentGBuffer
+            #include "UnlitPass.hlsl"
+            ENDHLSL
+        }
     }
     CustomEditor "ArgonaraShaderGUI"
 }
