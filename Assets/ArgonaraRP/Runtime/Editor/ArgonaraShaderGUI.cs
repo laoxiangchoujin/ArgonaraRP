@@ -6,7 +6,33 @@ using System.Collections.Generic;
 //自定义Shader GUI类
 public class ArgonaraShaderGUI : ShaderGUI
 {
-    private bool showPresets;//是否展示一些预设的选项
+    private bool showPresets;
+    private bool showStencil;
+    private bool showMain = true;
+    private bool showNormal = true;
+    private bool showEmission = true;
+    private bool showAlpha = true;
+    private bool showMask = true;
+    private bool showDetail = true;
+    private bool showRendering = true;
+
+    private static readonly Color _headerBg = new Color(1.555f, 1.555f, 1.555f);//这个是在原GUI颜色上乘算的
+
+    void FoldoutGroup(ref bool show, string title, System.Action drawContent)
+    {
+        var prev = GUI.backgroundColor;
+        GUI.backgroundColor = _headerBg;
+        show = EditorGUILayout.BeginFoldoutHeaderGroup(show, title);
+        GUI.backgroundColor = prev;
+        if (show)
+        {
+            EditorGUI.indentLevel++;
+            drawContent?.Invoke();
+            EditorGUI.indentLevel--;
+        }
+        EditorGUILayout.EndFoldoutHeaderGroup();
+        EditorGUILayout.Space(12);
+    }
     
     private MaterialEditor editor;//材质编辑器
     private Object[] materials;//对正在编辑的材质的引用
@@ -19,10 +45,11 @@ public class ArgonaraShaderGUI : ShaderGUI
         materials = editor.targets;//从通用类editor的target获取材质
         this.properties = properties;
 
-        base.OnGUI(materialEditor, FilterHiddenProperties(properties));//首先获取GUI面板，并过滤隐藏的属性
-        
-        BakedEmission();
-
+        //1.手动绘制，我指定的分组属性
+        DrawGroups();
+        //2.unity GUI画剩下未绘制的属性
+        base.OnGUI(materialEditor, FilterHiddenProperties(properties));//首先获取GUI面板，未分组的属性（含新增的）由 base 自动显示
+        //3.预设按钮
         showPresets = EditorGUILayout.Foldout(showPresets, "Presets", true);
         if (showPresets)//默认foldout折叠的，点击才显示
         {
@@ -41,20 +68,161 @@ public class ArgonaraShaderGUI : ShaderGUI
 
     MaterialProperty[] FilterHiddenProperties(MaterialProperty[] props)
     {
+        // 以下属性已由 DrawGroups 手动分组绘制，交给 base.OnGUI 时须隐藏，避免重复显示。
+        // 未在集合中的属性（含你将来新增的）仍会由 base.OnGUI 自动显示。
+        var grouped = new HashSet<string>
+        {
+            "_BaseMap", "_BaseColor",
+            "_Clipping", "_Cutoff",
+            "_Mask_Map", "_Metallic", "_Occlusion", "_Roughness",
+            "_SingleMaskMap", "_MetallicMap", "_OcclusionMap", "_RoughnessMap",
+            "_NormalMapToggle", "_NormalMap", "_NormalScale",
+            "_DetailMapToggle", "_DetailMaskMap", "_DetailMap", "_DetailNormalMap",
+            "_DetailAlbedo", "_DetailRoughness", "_DetailNormalScale",
+            "_EmissionToggle", "_EmissionMap", "_EmissionColor",
+            "_PremulAlpha", "_SrcBlend", "_DstBlend", "_ZWrite", "_Shadows", "_ReceiveShadows",
+            "_StencilRef", "_StencilComp", "_StencilOp"
+        };
         var filtered = new List<MaterialProperty>();
-        bool maskOn = FindProperty("_MaskMapToggle", props, false)?.floatValue > 0;
-        bool normalOn = FindProperty("_NormalMapToggle", props, false)?.floatValue > 0;
-        bool detailOn = FindProperty("_DetailMapToggle", props, false)?.floatValue > 0;
-
         foreach (var p in props)
         {
-            if (!maskOn && p.name == "_MaskMap") continue;
-            if (!normalOn && (p.name == "_NormalMap" || p.name == "_NormalScale")) continue;
-            if (!detailOn && (p.name == "_DetailMap" || p.name == "_DetailAlbedo" ||
-                p.name == "_DetailSmoothness" || p.name == "_DetailNormalMap" || p.name == "_DetailNormalScale")) continue;
-            filtered.Add(p);
+            if (!grouped.Contains(p.name))
+                filtered.Add(p);
         }
         return filtered.ToArray();
+    }
+
+    void DrawProperty(string name, string label = null)
+    {
+        MaterialProperty p = FindProperty(name, properties, false);
+        if (p != null)
+            editor.ShaderProperty(p, label ?? p.displayName);
+    }
+
+    bool IsOn(string name)
+    {
+        MaterialProperty p = FindProperty(name, properties, false);
+        return p != null && p.floatValue > 0.5f;
+    }
+
+    // 只把用户明确要求分组的内容放到组里；其余属性交给 base.OnGUI 自动显示
+    void DrawGroups()
+    {
+        FoldoutGroup(ref showMain, "Main Maps", () =>
+        {
+            var baseMap = FindProperty("_BaseMap", properties);
+            var baseColor = FindProperty("_BaseColor", properties);
+            editor.TexturePropertySingleLine(new GUIContent("基础贴图"), baseMap, baseColor);
+            editor.TextureScaleOffsetProperty(baseMap);
+        });
+
+        FoldoutGroup(ref showAlpha, "Alpha Clipping", () =>
+        {
+            DrawProperty("_Clipping");
+            if (IsOn("_Clipping"))
+                DrawProperty("_Cutoff");
+        });
+
+        FoldoutGroup(ref showMask, "Mask Map", () =>
+        {
+            DrawProperty("_Mask_Map");
+            int maskMode = (int)(FindProperty("_Mask_Map", properties, false)?.floatValue ?? 0);
+            if (maskMode == 0)
+            {
+                DrawProperty("_Roughness");
+                DrawProperty("_Metallic");
+            }
+            if (maskMode == 1)
+            {
+                DrawProperty("_SingleMaskMap");
+                DrawProperty("_Roughness");
+                DrawProperty("_Metallic");
+                DrawProperty("_Occlusion");
+            }
+            else if (maskMode == 2)
+            {
+                editor.TexturePropertySingleLine(
+                    new GUIContent("_RoughnessMap", "Roughness Map"),
+                    FindProperty("_RoughnessMap", properties),
+                    FindProperty("_Roughness", properties)
+                );
+                editor.TexturePropertySingleLine(
+                    new GUIContent("_MetallicMap", "Metallic Map"),
+                    FindProperty("_MetallicMap", properties),
+                    FindProperty("_Metallic", properties)
+                );
+                editor.TexturePropertySingleLine(
+                    new GUIContent("_OcclusionMap", "Occlusion Map"),
+                    FindProperty("_OcclusionMap", properties),
+                    FindProperty("_Occlusion", properties)
+                );
+            }
+        });
+
+        FoldoutGroup(ref showNormal, "Normal Map", () =>
+        {
+            DrawProperty("_NormalMapToggle");
+            if (IsOn("_NormalMapToggle"))
+            {
+                editor.TexturePropertySingleLine(
+                    new GUIContent("_NormalMap", "法线贴图"),
+                    FindProperty("_NormalMap", properties),
+                    FindProperty("_NormalScale", properties)
+                );
+            }
+        });
+
+        FoldoutGroup(ref showDetail, "Detail Maps", () =>
+        {
+            DrawProperty("_DetailMapToggle");
+            if (IsOn("_DetailMapToggle"))
+            {
+                DrawProperty("_DetailMaskMap");
+                DrawProperty("_DetailMap");
+                DrawProperty("_DetailAlbedo");
+                DrawProperty("_DetailRoughness");
+                if (IsOn("_NormalMapToggle"))
+                {
+                    editor.TexturePropertySingleLine(
+                        new GUIContent("_DetailNormalMap", "Detail Normal"),
+                        FindProperty("_DetailNormalMap", properties),
+                        FindProperty("_DetailNormalScale", properties)
+                    );
+                }
+            }
+        });
+
+        FoldoutGroup(ref showEmission, "Emission", () =>
+        {
+            DrawProperty("_EmissionToggle");
+            if (IsOn("_EmissionToggle"))
+            {
+                editor.TexturePropertyWithHDRColor(
+                    new GUIContent("_EmissionMap", "自发光贴图"),
+                    FindProperty("_EmissionMap", properties),
+                    FindProperty("_EmissionColor", properties),
+                    false
+                );
+                BakedEmission();
+            }
+        });
+
+        FoldoutGroup(ref showRendering, "Rendering", () =>
+        {
+            DrawProperty("_PremulAlpha");
+            DrawProperty("_SrcBlend");
+            DrawProperty("_DstBlend");
+            DrawProperty("_ZWrite");
+            DrawProperty("_Shadows");
+            DrawProperty("_ReceiveShadows");
+        });
+
+        FoldoutGroup(ref showStencil, "Stencil", () =>
+        {
+            DrawProperty("_StencilRef");
+            DrawProperty("_StencilComp");
+            DrawProperty("_StencilOp");
+        });
     }
 
     ///设置float属性

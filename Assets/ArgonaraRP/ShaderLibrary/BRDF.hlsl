@@ -91,7 +91,7 @@ float OneMinusReflectivityMetallic(float metallic)
 }
 
 //间接高光，曲线拟合，近似LUT的效果
-float3 IndirSpecFactor(float roughnessSquare,float smoothness,float metallic,float3 F0,float NdotV)
+float3 IndirSpecFactor(float roughnessSquare,float roughness,float metallic,float3 F0,float NdotV)
 {
     float surfaceReduction = 1/(roughnessSquare+1);//表面亮度降低。当粗糙度更大，高光被摊得更开，单点亮度更小，then整体亮度factor变低
 				
@@ -99,7 +99,7 @@ float3 IndirSpecFactor(float roughnessSquare,float smoothness,float metallic,flo
     half reflectivity = half(1.0) - oneMinusReflectivity;//返回0.04+0.96*metaiilc，就是金属度为0，就是非金属F0为0.04，全金属就是金属的F0为1
 				
     //grazing，轻擦、擦破、擦过
-    half grazingTerm = saturate(smoothness + reflectivity);
+    half grazingTerm = saturate((1.0 - roughness) + reflectivity);
     float fresnelTerm = Pow4(1.0-NdotV);//视线边缘，菲涅尔效果最强
 				
     return surfaceReduction * lerp(F0,grazingTerm,fresnelTerm);//直射时候系数就是F0正视角反射率，掠射的时候系数是算出的grazingTerm“掠射角反射率”的经验近似
@@ -114,7 +114,7 @@ float3 IndirectBRDF(Surface surface, BRDF brdf, float3 giDiffuse, float3 giSpecu
     //间接漫反射
     float3 indirectDiffuse = giDiffuse * k_d * brdf.albedo;
     //间接高光
-    float3 indirectSpecFactor = IndirSpecFactor(brdf.roughnessSquare, surface.smoothness, surface.metallic, brdf.F0, nv);
+    float3 indirectSpecFactor = IndirSpecFactor(brdf.roughnessSquare, surface.roughness, surface.metallic, brdf.F0, nv);
     float3 indirectSpecular = giSpecular * indirectSpecFactor;
     
     return (indirectDiffuse + indirectSpecular) * surface.occlusion;
@@ -127,7 +127,7 @@ BRDF GetBRDF(Surface surface, bool applyAlphaToDiffuse = false)//我们可能会
     BRDF brdf;
     
     //基础基础信息
-    brdf.perceptualRoughness = PerceptualSmoothnessToPerceptualRoughness(surface.smoothness);//1-perceptual smoothness
+    brdf.perceptualRoughness = surface.roughness;//1-perceptual smoothness
     brdf.roughness = PerceptualRoughnessToRoughness(brdf.perceptualRoughness);//对perceptual roughness平方
     brdf.roughnessSquare = pow(lerp(0.002, 1, brdf.roughness), 2);
     

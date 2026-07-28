@@ -80,6 +80,11 @@ float GetMetallic (InputConfig c) {
 	return 0.0;
 }
 
+float GetRoughness (InputConfig c)
+{
+	return 1.0;
+}
+
 float GetSmoothness (InputConfig c) {
 	return 0.0;
 }

@@ -3,11 +3,10 @@
 
 TEXTURE2D(_SourceTexture);
 
-TEXTURE2D(_GBuffer1);//rgb是albedo
+TEXTURE2D(_GBuffer1);//rgb是albedo,a的前4位是shadingModelID
 TEXTURE2D(_GBuffer2);//rgb是world normal
-TEXTURE2D(_GBuffer3);//rg是motion vector,ba是smoothness,metallic
-TEXTURE2D(_GBuffer4);//rgb是emission,a是occlusion
-TEXTURE2D(_GBuffer5);//xyz暂时存着indirect diffuse
+TEXTURE2D(_GBuffer3);//roughness,metallic,occlusion
+TEXTURE2D(_GBuffer4);//rgb是emission
 //TEXTURE2D(_GBufferDepth);
 
 struct Varyings
@@ -69,22 +68,27 @@ float4 DeferredLightPassFragment(Varyings input) : SV_Target
     //return float4(((float)shadingModelID).xxx, 1.0);
     
     float3 GT4 = SAMPLE_TEXTURE2D(_GBuffer4, sampler_linear_clamp, uv).rgb;
-    float3 emission = GT4.rgb;
+    float3 emission_indirectColor = GT4.rgb;
     
     float3 output = 0.0;
     
-    //0.简单处理unlit
+    //所有着色模型现在都采样深度图，因为，如果相机的ClearFlags为Color，要如此判断远处，以保留清除色
+    float GTDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
+    if (GTDepth < 0.00001)
+        return SAMPLE_TEXTURE2D(_CameraColorTexture, sampler_linear_clamp, uv);
     
+    //unlit == 0
     if (shadingModelID == 0)
     {
-        output = color + emission;
+        output = color + emission_indirectColor;
         return float4(output, 1.0);
     }
+    //lit == 1
     else if (shadingModelID == 1)
     {
         Surface surface;
         //深度图重建世界坐标
-        float GTDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
+        
         float4 posClip = float4(uv * 2 - 1, GTDepth, 1);
         #if UNITY_UV_STARTS_AT_TOP
         posClip.y = -posClip.y;  // 抵消 DefaultPassVertex 的 UV 翻转
@@ -100,33 +104,26 @@ float4 DeferredLightPassFragment(Varyings input) : SV_Target
         surface.interpolatedNormal = normal;
         surface.viewDirection = normalize(_WorldSpaceCameraPos - surface.position);
         surface.depth = GTDepth;//存疑？
-        surface.albedo = SAMPLE_TEXTURE2D(_GBuffer1, sampler_linear_clamp, uv).rgb;
+        surface.albedo = color;
         surface.alpha = 1.0;
     
         float4 GT3 = SAMPLE_TEXTURE2D(_GBuffer3, sampler_linear_clamp, uv);
-        surface.smoothness = GT3.x;
+        surface.roughness = GT3.x;
         surface.metallic = GT3.y;
         surface.occlusion = GT3.z;
-    
-        float4 GT4 = SAMPLE_TEXTURE2D(_GBuffer4, sampler_linear_clamp, uv);
         
         //surface.fresnelStrength = 1;
         surface.dither = InterleavedGradientNoise(uv, 0);
         surface.renderingLayerMask = asuint(unity_RenderingLayer.x);
     
         BRDF brdf = GetBRDF(surface, false);
+        
     
-        float3 GT5 = SAMPLE_TEXTURE2D(_GBuffer5, sampler_linear_clamp, uv);
-        float3 indirectDiffuse = GT5.rgb;
-    
-        //gi咋算？
-        GI gi = GetGI(indirectDiffuse, surface, brdf);
-        //gi.specular = float3(0,0,0);
+        
     
     
-        color = GetLighting(surface, brdf, gi);
-        emission = GT4.xyz;
-        color += emission;
+        color = GetLightingDeferred(surface, brdf);
+        color += emission_indirectColor;
     
         return float4(color, 1.0);
     }

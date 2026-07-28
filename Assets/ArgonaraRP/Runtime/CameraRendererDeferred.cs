@@ -27,8 +27,8 @@ public partial class CameraRendererDeferred : CameraRendererBase
 
     static CameraSettings defaultCameraSettings = new CameraSettings();//没有挂组件的相机用默认设置
 
-    bool useColorTexture, 
-        useIntermediateBuffer;//这个使用中间缓冲，在延迟中我们定为，始终是1，也就是永远先画到colorTexture上，然后再copy到屏幕上
+    //在我的Deferred流程中，永远先画到colorTexture上，然后再copy到屏幕上
+    //private bool useColorTexture;
     
     
     
@@ -51,9 +51,6 @@ public partial class CameraRendererDeferred : CameraRendererBase
         //尝试在场景里真实存在的Camera相机上，找到本管线自定义的，设置相机final pass混合模式和逐相机重载设置CameraSettings的组件
         var argonaraRPCamera = camera.GetComponent<ArgonaraRenderPipelineCamera>();
         CameraSettings cameraSettings = argonaraRPCamera ? argonaraRPCamera.Settings : defaultCameraSettings;//没找到就默认One,Zero，，，覆写的要用One,OneMinusSrcAlpha
-
-        //实际的相机camera和SceneView由管线+相机双重开关控制
-        useColorTexture = bufferSettings.copyColor && cameraSettings.copyColor;
         
         //相机自己的后处理设置覆盖管线全局设置
         if (cameraSettings.overridePostFX)
@@ -100,24 +97,23 @@ public partial class CameraRendererDeferred : CameraRendererBase
         Setup();
         //2.2渲染
         DrawVisibleGeometry(useDynamicBatching, useGPUInsancing, useLightsPerObject, cameraSettings.renderingLayerMask);
-        
         DrawUnsupportedShaders();
-        
-        // buffer.EndSample("Setup");
-        // ExecuteBuffer();
 
         //------------------------------3.Gizmos、后处理，到屏幕上---------------------------------
         DrawGizmosBeforeFX();//gizmos要区分在后处理前后有不一样
         if (postFXStack.IsActive)
         {
-            postFXStack.Render(colorAttachmentId);//后处理确实在后边啊
+            postFXStack.Render(colorAttachmentId);//若有后处理，用后处理画到屏幕，else再加一个pass画到屏幕
         }
-        else if (useIntermediateBuffer)
+        else
         {
             DrawFinal(cameraSettings.finalBlendMode);//无后处理时，复制颜色附件到CameraTarget，尊重视口和混合模式
             ExecuteBuffer();
         }
         DrawGizmosAfterFX();//这部分gizmos，在后处理后，此时它始终不被物体遮挡，好像是因为没有场景深度了，没法做深度测试
+
+        buffer.EndSample("Setup");
+        ExecuteBuffer();
         
         Cleanup();
         Submit(); //第二个endSample
@@ -141,26 +137,28 @@ public partial class CameraRendererDeferred : CameraRendererBase
     
     
     
-    //这里attachment附件，就是用于写入颜色，然后经过copy，另一张图再用于读取
+    //用于写入和读取的颜色纹理
     static int colorAttachmentId = Shader.PropertyToID("_CameraColorAttachment");
-    //static int depthAttachmentId = Shader.PropertyToID("_CameraDepthAttachment");
     static int colorTextureId = Shader.PropertyToID("_CameraColorTexture");
-    static int depthTextureId = Shader.PropertyToID("_CameraDepthTexture");//这里GBufferDepth当作这张纹理的attachment，用于写入，而它用于读取
+    //用于写入和读取的深度纹理
+    static int gDepthId = Shader.PropertyToID("_GBufferDepth");
+    static int depthTextureId = Shader.PropertyToID("_CameraDepthTexture");
+
+    static int[] gBuffersId =
+    {
+        Shader.PropertyToID("_GBuffer1"), Shader.PropertyToID("_GBuffer2"),
+        Shader.PropertyToID("_GBuffer3"), Shader.PropertyToID("_GBuffer4")
+    };
+    //这里，暂时用它存一下indrect diffuse，毕竟光照计算要用到。我想的是把间接diffuse暂存，间接高光在光照计算算
+    //等实现什么实时光照的方法后，弃用这个纹理
+    
     static int sourceTextureId = Shader.PropertyToID("_SourceTexture");
     static int srcBlendId = Shader.PropertyToID("_CameraSrcBlend");
     static int dstBlendId = Shader.PropertyToID("_CameraDstBlend");
 
     private static int bufferSizeId = Shader.PropertyToID("_CameraBufferSize");//因为unity默认提供的_ScreenParams数值不会随我们的渲染缩放调整，需要自己传值替代
     
-    static int gDepthId = Shader.PropertyToID("_GBufferDepth");
-    static int[] gBuffersId =
-    {
-        Shader.PropertyToID("_GBuffer1"), Shader.PropertyToID("_GBuffer2") ,
-        Shader.PropertyToID("_GBuffer3"), Shader.PropertyToID("_GBuffer4"),
-        Shader.PropertyToID("_GBuffer5")
-    };
-    //这里，暂时用它存一下indrect diffuse，毕竟光照计算要用到。我想的是把间接diffuse暂存，间接高光在光照计算算
-    //等实现什么实时光照的方法后，弃用这个纹理
+    
     
     ///将相机的属性应用于上下文context
     void Setup()
@@ -174,36 +172,20 @@ public partial class CameraRendererDeferred : CameraRendererBase
         CameraClearFlags flags = camera.clearFlags;//它有4个值，1~4是Skybox,Color,Depth,Nothing，
 
         AllocateGBuffers();
-
-        useIntermediateBuffer = useScaleRendering || 
-                                useColorTexture || 
-                                postFXStack.IsActive;
-        if (useIntermediateBuffer)//需要获取帧缓冲的情况
-        {
-            if (flags > CameraClearFlags.Color)//color是2，只清depth或什么都不清是3或4
-            {
-                flags = CameraClearFlags.Color;//这个相机如果只清深度，或什么都不清，如果要应用后处理，就得把颜色和深度都强制清掉
-            }
-            
-            //若有后处理启用，把渲染目标设为临时纹理，而非屏幕，所以，DrawVisibleGeometry(),DrawUnsupportedShaders(),DrawGizmosBeforeFX()此时都只画在"_CameraFrameBuffer"上
-            
-            //把frameBufferId的单独的帧缓冲区纹理拆成颜色和深度
-            buffer.GetTemporaryRT(colorAttachmentId, bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
-                useHDR ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default);//是否启用HDR只对后处理堆栈有影响，因此在这决定RT的格式
-            // buffer.GetTemporaryRT(depthAttachmentId, bufferSize.x, bufferSize.y, 32, FilterMode.Point,
-            //     RenderTextureFormat.Depth);
-            buffer.SetRenderTarget(colorAttachmentId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
-                gDepthId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);//设置渲染目标的时候，这样写，就是两张纹理共享一个帧缓冲区
-            //原来的写法：buffer.SetRenderTarget(frameBufferId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);//是一张纹理一个帧缓冲区
-        }
+        
+        //用于写入的color缓冲
+        buffer.GetTemporaryRT(colorAttachmentId, bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
+            useHDR ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default);//是否启用HDR只对后处理堆栈有影响，因此在这决定RT的格式
+        buffer.SetRenderTarget(colorAttachmentId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
+            gDepthId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);//设置渲染目标的时候，这样写，就是两张纹理共享一个帧缓冲区
         
         buffer.ClearRenderTarget(
             flags <= CameraClearFlags.Depth, //除了清除标识为nothing以外都要清除深度缓冲
             flags <= CameraClearFlags.Color, 
             flags == CameraClearFlags.Color ? camera.backgroundColor.linear : Color.clear);//如果清除标志就是颜色，那么填入相机的清除颜色
         buffer.BeginSample("Setup");
+        //用于读取的_CameraColorTexture
         buffer.SetGlobalTexture(colorTextureId, missingTexture);//默认空纹理占位，避免未启用时shader报错
-        //buffer.SetGlobalTexture(depthTextureId, missingTexture);
         ExecuteBuffer();
     }
 
@@ -233,8 +215,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
     // 1    ARGB32 8×4      albedo          albedo          albedo          ShadingModelID(4b)+空(4b)        32
     // 2    ARGB2101010     normal.x        normal.y        normal.z        _ReceiveShadows(1b)+空(1b)       32
     // 3    ARGB32 8×4      smoothness      metallic        occlusion       空                               32
-    // 4    RGB111110       emission(11b)   emission(11b)   emission(10b)   —                                32
-    // 5    ARGB32 8×4      indirectDiffuse indirectDiffuse indirectDiffuse 空                               32
+    // 4    RGB111110       emission + indirect diffuse and Specular        —                                32
     
     void AllocateGBuffers()
     {
@@ -248,9 +229,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
         buffer.GetTemporaryRT(gBuffersId[2], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
             RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear); //GT3，xyz是smoothness,metallic,occlusion，w是空
         buffer.GetTemporaryRT(gBuffersId[3], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
-            RenderTextureFormat.RGB111110Float, RenderTextureReadWrite.Linear); //GT4，xyz是emission(11，11，10)，没有w通道
-        buffer.GetTemporaryRT(gBuffersId[4], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
-            RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear); //GT5，目前暂时存在，xyz是indirect diffuse，w是空
+            RenderTextureFormat.RGB111110Float, RenderTextureReadWrite.Linear); //GT4，xyz是emission + indirect diffuse and Specular(11，11，10)，没有w通道
 
     }
     
@@ -264,7 +243,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
         // buffer.GetTemporaryRT(gBuffersId[3], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);     //GT4，xyz是emission，w是occlusion
         // buffer.GetTemporaryRT(gBuffersId[4], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);        //GT5，目前暂时存在，xyz是indirect diffuse
         
-        buffer.SetRenderTarget(new RenderTargetIdentifier[] {gBuffersId[0], gBuffersId[1], gBuffersId[2], gBuffersId[3], gBuffersId[4]}, gDepthId);
+        buffer.SetRenderTarget(new RenderTargetIdentifier[] {gBuffersId[0], gBuffersId[1], gBuffersId[2], gBuffersId[3]}, gDepthId);
         buffer.ClearRenderTarget(true, true, Color.clear);
         buffer.name = "GBuffer";
         buffer.BeginSample("GBuffer");
@@ -299,7 +278,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
         //为Opaque Lit写入GBuffer
         //DrawGBuffers();
         buffer.SetRenderTarget(
-            new RenderTargetIdentifier[] { gBuffersId[0], gBuffersId[1], gBuffersId[2], gBuffersId[3], gBuffersId[4] },
+            new RenderTargetIdentifier[] { gBuffersId[0], gBuffersId[1], gBuffersId[2], gBuffersId[3]},
             gDepthId);
         buffer.ClearRenderTarget(true, true, Color.clear);
         buffer.name = "GBuffer";
@@ -313,6 +292,9 @@ public partial class CameraRendererDeferred : CameraRendererBase
         buffer.SetGlobalTexture(depthTextureId, depthTextureId);
         foreach(var gBufferId in gBuffersId)
             buffer.SetGlobalTexture(gBufferId, gBufferId);
+
+        if(camera.clearFlags >= CameraClearFlags.Color)
+            CopyColorAttachments(); //若相机的ClearFlags为Color，光照计算时候，需要第一次清除的背景色，复制到_CameraColorTexture
         
         //恢复渲染目标回colorTexture
         buffer.SetRenderTarget(colorAttachmentId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
@@ -331,11 +313,10 @@ public partial class CameraRendererDeferred : CameraRendererBase
         
         //绘制天空盒
         context.DrawSkybox(camera);//关于它，为什么相机标记为clearFlags为color时看不到天空盒？明明天空盒在默认颜色之后渲染，也不清除天空盒，为啥只能看到颜色？，，，发现clearFlags为color的时候，帧调试器里没有drawSkybox，那就是自动跳过了，大概率是底层C++固定做的判断
-        
-        if (useColorTexture)
-        {
-            CopyAttachments();//用于trans读取的颜色纹理内容是截止到画完天空盒
-        }
+
+        //复制到_CameraColorTexture使其可用(在透明阶段)
+        //用于trans读取的颜色纹理内容是截止到画完天空盒
+        CopyColorAttachments();
 
         //画transparent——第2个DrawingSettings，目前有transparnet unlit和lit
         var transparentDrawingSettings = new DrawingSettings(unlitShaderTagId, sortingSettings)
@@ -351,7 +332,6 @@ public partial class CameraRendererDeferred : CameraRendererBase
                             PerObjectData.OcclusionProbeProxyVolume |
                             lightsPerObjectFlags
         };
-        // context.DrawRenderers(cullingResults, ref unlitDrawingSettings, ref filteringSettings);
         
         //先绘制opaque，再绘制skybox，然后绘制transparent   避免skybox盖住半透物体
         //trans的排序用CommonTransparent，从后往前绘制，和opaque的前往后相反
@@ -368,40 +348,34 @@ public partial class CameraRendererDeferred : CameraRendererBase
     void Cleanup()
     {
         lighting.Cleanup();
-        if (useIntermediateBuffer)
-        {
-            buffer.ReleaseTemporaryRT(colorAttachmentId);
-            //buffer.ReleaseTemporaryRT(depthAttachmentId);
-            if (useColorTexture)
-            {
-                buffer.ReleaseTemporaryRT(colorTextureId);
-            }
-        }
-        buffer.ReleaseTemporaryRT(depthTextureId);
+        
+        //清除用于写入和读取的两张color
+        buffer.ReleaseTemporaryRT(colorAttachmentId);
+        buffer.ReleaseTemporaryRT(colorTextureId);
 
+        //清除用于写入和读取的两张depth和GBuffer
         buffer.ReleaseTemporaryRT(gDepthId);
+        buffer.ReleaseTemporaryRT(depthTextureId);
         for (int i = 0; i < gBuffersId.Length; i++) 
             buffer.ReleaseTemporaryRT(gBuffersId[i]);
     }
 
     static bool copyTextureSupported = SystemInfo.copyTextureSupport > CopyTextureSupport.None; 
     
-    void CopyAttachments()
+    //画skybox后，创建并拷贝颜色纹理
+    void CopyColorAttachments()
     {
-        //颜色纹理拷贝（折射/扭曲等透明物体需要）
-        if (useColorTexture)
-        {
-            buffer.GetTemporaryRT(colorTextureId, bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
+        buffer.GetTemporaryRT(colorTextureId, bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
                 useHDR ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default);
-            if (copyTextureSupported)
-            {
-                buffer.CopyTexture(colorAttachmentId, colorTextureId);
-            }
-            else
-            {
-                Draw(colorAttachmentId, colorTextureId);
-            }
+        if (copyTextureSupported)
+        {
+            buffer.CopyTexture(colorAttachmentId, colorTextureId);
         }
+        else
+        {
+            Draw(colorAttachmentId, colorTextureId);
+        }
+        
         if (!copyTextureSupported)
         {
             buffer.SetRenderTarget(colorAttachmentId, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store,
@@ -410,22 +384,20 @@ public partial class CameraRendererDeferred : CameraRendererBase
         ExecuteBuffer();
     }
 
+    //画GBuffer的Opaque后，创建并拷贝深度纹理    想自己的深度出现在深度纹理上，要开启ZWrite，并且queue在0~2450
     void CopyDepthAttachments()
     {
-        //深度纹理拷贝（软粒子等需要）
-        if (true)
+        buffer.GetTemporaryRT(depthTextureId, bufferSize.x, bufferSize.y, 32, FilterMode.Point,
+            RenderTextureFormat.Depth);
+        if (copyTextureSupported)
         {
-            buffer.GetTemporaryRT(depthTextureId, bufferSize.x, bufferSize.y, 32, FilterMode.Point,
-                RenderTextureFormat.Depth);
-            if (copyTextureSupported)
-            {
-                buffer.CopyTexture(gDepthId, depthTextureId);
-            }
-            else
-            {
-                Draw(gDepthId, depthTextureId, true);
-            }
+            buffer.CopyTexture(gDepthId, depthTextureId);
         }
+        else
+        {
+            Draw(gDepthId, depthTextureId, true);
+        }
+        
         if (!copyTextureSupported)
         {
             buffer.SetRenderTarget(colorAttachmentId, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store,

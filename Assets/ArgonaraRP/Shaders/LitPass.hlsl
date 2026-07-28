@@ -58,12 +58,8 @@ float4 LitPassFragment(Varyings input) : SV_Target
     
     InputConfig config = GetInputConfig(input.positionCS_SS, input.baseUV);
     ClipLOD(config.fragment, unity_LODFade.x);
-    #if defined(_MASK_MAP)
-        config.useMask = true;
-    #endif
     #if defined(_DETAIL_MAP)
-    config.detailUV = input.detailUV;
-    config.useDetail = true;
+        config.detailUV = input.detailUV;
     #endif
     
     float4 base = GetBase(config);
@@ -75,7 +71,7 @@ float4 LitPassFragment(Varyings input) : SV_Target
     Surface surface;
     surface.position = input.positionWS;
     #if defined(_NORMAL_MAP)
-        surface.normal = NormalTangentToWorld(GetNormalTS(config), input.normalWS, input.tangentWS);
+        surface.normal = normalize(NormalTangentToWorld(GetNormalTS(config), input.normalWS, input.tangentWS));
         surface.interpolatedNormal = normalize(input.normalWS);
     #else
         surface.normal = normalize(input.normalWS);
@@ -87,7 +83,7 @@ float4 LitPassFragment(Varyings input) : SV_Target
     surface.alpha = base.a;
     surface.metallic = GetMetallic(config);
     surface.occlusion = GetOcclusion(config);
-    surface.smoothness = GetSmoothness(config);
+    surface.roughness = GetRoughness(config);
     //surface.fresnelStrength = GetFresnel(config);
     surface.dither = InterleavedGradientNoise(config.fragment.positionSS, 0);
     surface.renderingLayerMask = asuint(unity_RenderingLayer.x);
@@ -99,7 +95,7 @@ float4 LitPassFragment(Varyings input) : SV_Target
     #endif
     
     GI gi = GetGI(GI_FRAGMENT_DATA(input), surface, brdf);
-    float3 color = GetLighting(surface, brdf, gi);
+    float3 color = GetLightingForward(surface, brdf, gi);
     color += GetEmission(config);
     
     //有一些比较幽默的事情，关于纹理和采样器混用，造成的“采样器未声明”的报错
@@ -126,19 +122,14 @@ void LitPassFragmentGBuffer(Varyings input,
     out float4 GT1 : SV_Target0,
     out float4 GT2 : SV_Target1,
     out float4 GT3 : SV_Target2,
-    out float3 GT4 : SV_Target3,
-    out float4 GT5 : SV_Target4)
+    out float3 GT4 : SV_Target3)
 {
     UNITY_SETUP_INSTANCE_ID(input);
     
     InputConfig config = GetInputConfig(input.positionCS_SS, input.baseUV);
     ClipLOD(config.fragment, unity_LODFade.x);
-    #if defined(_MASK_MAP)
-        config.useMask = true;
-    #endif
     #if defined(_DETAIL_MAP)
-    config.detailUV = input.detailUV;
-    config.useDetail = true;
+        config.detailUV = input.detailUV;
     #endif
     
     float4 base = GetBase(config);
@@ -148,36 +139,42 @@ void LitPassFragmentGBuffer(Varyings input,
         clip(base.a - GetCutoff(config));
     #endif
     
-    //Surface surface;
-    //surface.position = input.positionWS;
+    Surface surfaceWS;
+    surfaceWS.position = input.positionWS;
     #if defined(_NORMAL_MAP)
-        float3 normalWS = NormalTangentToWorld(GetNormalTS(config), input.normalWS, input.tangentWS);
+        surfaceWS.normal = normalize(NormalTangentToWorld(GetNormalTS(config), input.normalWS, input.tangentWS));
+        surfaceWS.interpolatedNormal = normalize(input.normalWS);
     #else
-        float3 normalWS = normalize(input.normalWS);
+        surfaceWS.normal = normalize(input.normalWS);
+        surfaceWS.interpolatedNormal = surfaceWS.normal;
     #endif
-    //surface.viewDirection = normalize(_WorldSpaceCameraPos - input.positionWS);
-    //surface.depth = - TransformWorldToView(input.positionWS).z;
+    surfaceWS.viewDirection = normalize(_WorldSpaceCameraPos - input.positionWS);
+    surfaceWS.depth = - TransformWorldToView(input.positionWS).z;
+    surfaceWS.albedo = base.rgb;
+    surfaceWS.alpha = 1;
+    surfaceWS.metallic = GetMetallic(config);
+    surfaceWS.occlusion = GetOcclusion(config);
+    surfaceWS.roughness = GetRoughness(config);
+    surfaceWS.dither = InterleavedGradientNoise(config.fragment.positionSS, 0);
+    surfaceWS.renderingLayerMask = asuint(unity_RenderingLayer.x);
     
-    //surface.alpha = base.a;
-    float metallic = GetMetallic(config);
-    float occlusion = GetOcclusion(config);
-    float smoothness = GetSmoothness(config);
-    //surface.fresnelStrength = GetFresnel(config);
-    //surface.dither = InterleavedGradientNoise(config.fragment.positionSS, 0);
-    //surface.renderingLayerMask = asuint(unity_RenderingLayer.x);
+    BRDF brdf = GetBRDF(surfaceWS, false);
+    
+    GI gi = GetGI(GI_FRAGMENT_DATA(input), surfaceWS, brdf);
     
     float3 emission = GetEmission(config);
     
-    float3 indirectDiffuse = SampleLightmap(GI_FRAGMENT_DATA(input)) + SampleLightProbe(input.positionWS, normalWS);
+    float3 indirectColor = IndirectBRDF(surfaceWS, brdf, gi.diffuse, gi.specular);
+        //SampleLightmap(GI_FRAGMENT_DATA(input)) + SampleLightProbe(input.positionWS, normalWS);
     
     float shadingModelID4_null4 = ((uint)1 << 4)/255.0;
     GT1 = float4(color, shadingModelID4_null4);
-    GT2 = float4(normalWS * 0.5 + 0.5, 0.0);
-    GT3 = float4(smoothness, metallic, occlusion, 0.0);
-    GT4 = float3(emission);
+    GT2 = float4(surfaceWS.normal * 0.5 + 0.5, 0.0);
+    GT3 = float4(surfaceWS.roughness, surfaceWS.metallic, surfaceWS.occlusion, 0.0);
+    GT4 = float3(emission + indirectColor);
     
     
-    GT5 = float4(indirectDiffuse, 0);
+    //GT5 = float4(indirectDiffuse, 0);
     //return float4(color, GetFinalAlpha(surface.alpha));//不透明物体强制Alpha=1，保证相机叠加时Alpha值正确
 }
 

@@ -10,7 +10,7 @@ struct Surface
     float depth;
     float3 albedo;
     float alpha;
-    float smoothness;
+    float roughness;
     float metallic;
     float occlusion;
     float dither;//最开始引入是，实现cascade blend的dither混合
