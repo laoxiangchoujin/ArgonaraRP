@@ -1,0 +1,161 @@
+#pragma kernel CSMain
+#define GROUP_SIZE 256
+
+struct Instance {
+	float3 pos;
+	float3 rot;
+	float sca;
+};
+StructuredBuffer<Instance> beforeCulling;
+
+
+
+//视锥裁剪
+float4 cullingPlanes[6];
+
+bool isOutsidePlane(float4 plane, float3 pos) {
+	//for a plane and a point,normal*point + plane de D >0
+	//ze zai mian wai
+	return dot(plane.xyz, pos) + plane.w > 0;
+}
+
+float3 boundsMin = float3(-4, 0, -4);
+float3 boundsMax = float3(4, 2048, 4);
+
+float3 points[8];
+
+void InitPoints() {
+	points[0] = boundsMin;
+	points[1] = float3(boundsMin.x, boundsMin.y, boundsMax.z);
+	points[2] = float3(boundsMin.x, boundsMax.y, boundsMin.z);
+	points[3] = float3(boundsMax.x, boundsMin.y, boundsMin.z);
+	points[4] = float3(boundsMin.x, boundsMax.y, boundsMax.z);
+	points[5] = float3(boundsMax.x, boundsMin.y, boundsMax.z);
+	points[6] = float3(boundsMax.x, boundsMax.y, boundsMin.z);
+	points[7] = boundsMax;
+}
+
+struct Node {
+	float3 pos;
+	int2 indexxy;
+	float width;
+	int lod;
+};
+StructuredBuffer<Node> quadTreeFinalBuffer;//从Qdtree传来的四叉树lod等级node buffer
+int quadTreeFinalCount;
+
+//算完lod，传回C#的几个buffer，每个lod等级对应一个buffer，也在C#里对应一个argsbuffer
+AppendStructuredBuffer<Instance> lod0Buffer, lod1Buffer, lod2Buffer, lod3Buffer, 
+								lod4Buffer, lod5Buffer, lod6Buffer, lod7Buffer;
+
+Texture2D<float4> heightMap;
+SamplerState sampler_heightMap;
+float heightMapResolution;
+float terrainWidth;
+
+float _TerrainMaxHeight;
+int _EnableFrustumCulling; // 值等于1的时候开启剔除，0的时候全渲染
+
+[numthreads(256, 1, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+	uint idx = id.x;
+	// if (idx >= (uint)patchCount)
+	// 	return;		???
+	
+	Instance patch = beforeCulling[idx];
+	patch.rot = float3(0, 0, 0);
+	patch.sca = 1;
+	
+	
+	//float2 uv = float2((patch.pos.x - (-0.5 * terrainWidth)) / terrainWidth, (patch.pos.z - (-0.5 * terrainWidth)) / terrainWidth);
+	// float thisHeight = heightMap.Load(int3(uv * heightMapWidth, 0)).r;//因为load用的是像素的整数坐标，必须得知道纹理的分辨率
+	// thisHeight *= terrainWidth / 2;
+	//
+	// boundsMin.y = thisHeight - 100 > 0 ? thisHeight - 100 : 0;
+	// boundsMax.y = thisHeight + 100;//不知道为什么只有这样才行，诡异
+	
+	//关于这个patch的范围的高度，应该得烘焙一个minMaxMap，暂且不弄
+	
+	//视锥剔除
+	if (_EnableFrustumCulling != 0) {
+		float3 bMin = patch.pos - float3(4, 0, 4);
+		float3 bMax = patch.pos + float3(4, 0, 4);
+		bMin.y = 0;
+		bMax.y = _TerrainMaxHeight;
+		float3 pts[8];
+		pts[0] = bMin;
+		pts[1] = float3(bMin.x, bMin.y, bMax.z);
+		pts[2] = float3(bMin.x, bMax.y, bMin.z);
+		pts[3] = float3(bMax.x, bMin.y, bMin.z);
+		pts[4] = float3(bMin.x, bMax.y, bMax.z);
+		pts[5] = float3(bMax.x, bMin.y, bMax.z);
+		pts[6] = float3(bMax.x, bMax.y, bMin.z);
+		pts[7] = bMax;
+		for (int i = 0; i < 6; i++) {
+			bool allOutside = true;
+			for (int j = 0; j < 8; j++) {
+				if (isOutsidePlane(cullingPlanes[i], pts[j])) {
+					allOutside = false;
+					break;
+				}
+			}
+			if (allOutside)
+				return;
+		}
+	}
+	
+	float4 worldPos = float4(patch.pos, 1);
+	
+	bool bIsAppended = false;
+
+	for (int k = 0; k < quadTreeFinalCount; k++) {
+		Node node = quadTreeFinalBuffer[k];
+
+		if (worldPos.x > node.pos.x - node.width / 2 * 1.1 && worldPos.x < node.pos.x + node.width / 2 * 1.1)
+			if (worldPos.z > node.pos.z - node.width / 2 * 1.1 && worldPos.z < node.pos.z + node.width / 2 * 1.1) {
+				//说明这个patch在这个node里面，该使用它的lod范围
+
+				
+				switch (node.lod)
+				{
+				case 0:
+					lod0Buffer.Append(patch);
+					bIsAppended = true;
+					break;
+				case 1:
+					lod1Buffer.Append(patch);
+					bIsAppended = true;
+					break;
+				case 2:
+					lod2Buffer.Append(patch);
+					bIsAppended = true;
+					break;
+				case 3:
+					lod3Buffer.Append(patch);
+					bIsAppended = true;
+					break;
+				case 4:
+					lod4Buffer.Append(patch);
+					bIsAppended = true;
+					break;
+				case 5:
+					lod5Buffer.Append(patch);
+					bIsAppended = true;
+					break;
+				case 6:
+					lod6Buffer.Append(patch);
+					bIsAppended = true;
+					break;
+				case 7:
+					lod7Buffer.Append(patch);
+					bIsAppended = true;
+					break;
+				}
+				
+			}
+	}
+
+	if (bIsAppended == false)
+		lod4Buffer.Append(patch);
+}

@@ -23,7 +23,7 @@ Shader "Argonara RP/Lit"
     	_NormalScale("Normal Scale",Range(0,2)) = 1
     	
     	[Toggle(_DETAIL_MAP)] _DetailMapToggle ("Detail", Float) = 0
-    	[NoScaleOffset] _DetailMaskMap("Detail Mask\n(same uv with baseMap)", 2D) = "white" {}
+    	[NoScaleOffset] _DetailMaskMap("Detail Mask(same uv with baseMap)", 2D) = "white" {}
     	_DetailMap("Detail Map", 2D) = "linearGrey" {}
     	[NoScaleOffset] _DetailNormalMap("Detail Normal",2D)="bump"{}
     	_DetailAlbedo("Detail Albedo", Range(0, 1)) = 1

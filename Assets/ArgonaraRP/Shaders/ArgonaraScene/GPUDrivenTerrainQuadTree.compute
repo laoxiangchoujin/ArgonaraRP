@@ -1,0 +1,139 @@
+#pragma kernel QuadTreeCSMain
+#pragma kernel CopyInitBuffer
+#define GROUP_SIZE 256
+
+struct Node {
+	float3 pos;
+	int2 indexxy;
+	float width;
+	int lodLevel;
+};
+
+int consumeBufferCount;//线程数会比这一帧需要加的node更多，需要return控制		//感觉这个更应该叫consume的count，因为它存的是本帧consume需要的量，本帧算完后，会变成本帧append总数，也是下一帧consume的量
+//ping-pong双buffer，和最终结果buffer
+RWStructuredBuffer<Node> consumeNodeBuffer;//本帧的，需要考虑细分的节点
+AppendStructuredBuffer<Node> appendNodeBuffer;//开始时为空，本帧确定要细分的，填入
+
+
+//算完lod，传回C#的buffer
+AppendStructuredBuffer<Node> appendFinalList;//开始时可能有值，本帧计算发现的，确定不需要继续细分的，填入此，它下一帧不进入CSMain
+
+
+//视锥裁剪相关
+float4 cullingPlanes[6];
+
+bool isOutsidePlane(float4 plane, float3 pos) {
+	//for a plane and a point,normal*point + plane's D >0
+	//zai mian wai
+	return dot(plane.xyz, pos) + plane.w > 0;
+}
+
+//实际上视锥剔除应该准备一个高度的预烘焙纹理，好像叫什么"min max tex"
+
+//eight bound points
+float3 boundsMin = float3(-4, 0, -4);
+float3 boundsMax = float3(4, 2048, 4);
+
+float3 points[8];
+
+
+
+//用于判断是否继续细分
+float3 camPos;
+float subdivideStrength;
+int _EnableFrustumCulling;
+
+bool nodeEvaluate(float3 nodePos, float nodeWidth, float myControlStrength) {
+	
+	//f = d / (n * c);
+	float f = distance(float3(camPos.x, 0, camPos.z), float3(nodePos.x, 0, nodePos.z)) / (nodeWidth * myControlStrength);
+	return f < 1;
+}
+
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void QuadTreeCSMain(uint3 id : SV_DispatchThreadID)
+{
+	uint idx = id.x;
+	if (idx >= (uint)consumeBufferCount)
+		return;
+
+	Node node = consumeNodeBuffer[idx];
+	
+	//视锥裁剪
+	if (_EnableFrustumCulling != 0) {
+	float halfW = node.width * 0.5;
+	float3 bMin = node.pos - float3(halfW, 0, halfW);
+	float3 bMax = node.pos + float3(halfW, 0, halfW);
+	bMin.y = 0;
+	bMax.y = 2048;
+	float3 pts[8];
+	pts[0] = bMin;
+	pts[1] = float3(bMin.x, bMin.y, bMax.z);
+	pts[2] = float3(bMin.x, bMax.y, bMin.z);
+	pts[3] = float3(bMax.x, bMin.y, bMin.z);
+	pts[4] = float3(bMin.x, bMax.y, bMax.z);
+	pts[5] = float3(bMax.x, bMin.y, bMax.z);
+	pts[6] = float3(bMax.x, bMax.y, bMin.z);
+	pts[7] = bMax;
+	for (int i = 0; i < 6; i++) {
+		bool allOutside = true;
+		for (int j = 0; j < 8; j++) {
+			if (isOutsidePlane(cullingPlanes[i], pts[j])) {
+				allOutside = false;
+				break;
+			}
+		}
+		if (allOutside)
+			return;
+	}
+	}
+	
+	
+	//四叉树细分			通过距离控制函数，且还没到lod0，就继续分
+	if (nodeEvaluate(node.pos, node.width, subdivideStrength) && node.lodLevel >= 1)
+	{
+		Node nld = node;	nld.pos += float3(-1, 0, -1) * (node.width / 4);
+		Node nlu = node;	nlu.pos += float3(-1, 0, 1)  * (node.width / 4);
+		Node nrd = node;	nrd.pos += float3(1, 0, -1)  * (node.width / 4);
+		Node nru = node;	nru.pos += float3(1, 0, 1)   * (node.width / 4);
+
+		nld.indexxy *= 2;
+		nlu.indexxy = nld.indexxy + float2(0, 1);
+		nrd.indexxy = nld.indexxy + float2(1, 0);
+		nru.indexxy = nld.indexxy + float2(1, 1);
+
+		nld.width /= 2;
+		nlu.width /= 2;
+		nrd.width /= 2;
+		nru.width /= 2;
+
+		nld.lodLevel -= 1;
+		nlu.lodLevel -= 1;
+		nrd.lodLevel -= 1;
+		nru.lodLevel -= 1;
+
+		appendNodeBuffer.Append(nld);
+		appendNodeBuffer.Append(nlu);
+		appendNodeBuffer.Append(nrd);
+		appendNodeBuffer.Append(nru);
+	}
+	else
+	{
+		//这个node不需要再细分了，加入最终列表
+
+		appendFinalList.Append(node);
+	}
+}
+
+
+//--------------初始化Copy--------------------
+StructuredBuffer<Node> InitBuffer;
+int initNodeCount;
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void CopyInitBuffer(uint3 id : SV_DISPATCHTHREADID) {
+	int idx = (int)id.x;
+	if (idx < initNodeCount)
+		consumeNodeBuffer[idx] = InitBuffer[idx];
+}
