@@ -24,6 +24,9 @@ public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPip
     [SerializeField]
     ShadowSettings shadows = default;
     
+    //给调试代码等提供只读访问（如 Scene 视图里的级联球线框需要现算，直接从当前资产取设置）
+    public ShadowSettings Shadows => shadows;
+    
     [SerializeField]
     PostFXSettings postFXSettings = default;
     

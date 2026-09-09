@@ -15,7 +15,7 @@
 #endif
 
 #define MAX_SHADOWED_DIRECTIONAL_LIGHT_COUNT 4
-#define MAX_CASCADE_COUNT 4
+#define MAX_CASCADE_COUNT 8
 
 #if defined(_OTHER_PCF3)
     #define OTHER_FILTER_SAMPLES 4
@@ -43,7 +43,8 @@ CBUFFER_START(_CustomShadows)
     float4x4 _OtherShadowMatrices[MAX_SHADOWED_OTHER_LIGHT_COUNT];
     float4 _OtherShadowTiles[MAX_SHADOWED_OTHER_LIGHT_COUNT];//目前只有w存了透视灯光的距离1位置的shadow normal bias
     //float _ShadowDistance;//最大阴影距离
-    float4 _ShadowAtlasSize;//图集的大小和纹素大小
+    float4 _ShadowAtlasSize;//定向光的图集大小：x=像素宽, y=1/宽, z=像素高, w=1/高（图集可能是长方形）
+    float4 _OtherShadowAtlasSize;//其他光源的图集大小：x=正方形边长, y=1/边长（与定向光解耦，各传各的）
     float4 _ShadowDistanceFade;//x是1/最大距离，y是1/距离衰减，z是cascadeFade的一个带平方的因子
 CBUFFER_END
 
@@ -86,7 +87,9 @@ float FilterDirectionalShadow(float3 positionSTS)
     #if defined(DIRECTIONAL_FILTER_SETUP)//当定义了DIRECTIONAL_FILTER_SETUP，会执行多次采样
     float weights[DIRECTIONAL_FILTER_SAMPLES];
     float2 positions[DIRECTIONAL_FILTER_SAMPLES];
-    float4 size = _ShadowAtlasSize.yyxx;//yyxx，里面，y是纹素大小，x是图集大小//？为什么要知道图集大小？
+    //定向光图集可能是长方形：存的是x=像素宽,y=1/宽,z=像素高,w=1/高
+    //而tent filter要的size是：.xy=纹素尺寸(1/宽,1/高)，.zw=像素尺寸(宽,高)
+    float4 size = float4(_ShadowAtlasSize.y, _ShadowAtlasSize.w, _ShadowAtlasSize.x, _ShadowAtlasSize.z);
     DIRECTIONAL_FILTER_SETUP(size, positionSTS.xy, weights, positions);
     float shadow = 0;
     for (int i = 0; i < DIRECTIONAL_FILTER_SAMPLES; i++) {
@@ -210,9 +213,14 @@ ShadowData GetShadowData (Surface surfaceWS)
             {
                 data.strength *= fade;
             }
-            else
+     			else
             {
-                data.cascadeBlend = fade;//算的原理和最外层级联渐变到0一样，只不过这是更小的球。混合值<1，说明在过渡区域，要在下一个级联中采样，插值混合
+            	//先确认片元真的也落在“下一级联”的球里才向它过渡，否则留在本级联：
+            	//画面左右两侧的地面点常会先碰到当前级联球边缘、却还没进入下一级联球，
+            	//此时直接去采下一级联的shadowmap属于越界采样，会出现不该有的环形假阴影。
+            	float4 nextSphere = _CascadeCullingSpheres[i + 1];
+            	data.cascadeBlend =
+            		DistanceSquared(surfaceWS.position, nextSphere.xyz) < nextSphere.w ? fade : 1.0;
             }
             break;
         }
@@ -255,7 +263,7 @@ float FilterOtherShadow (float3 positionSTS, float3 bounds) {
     #if defined(OTHER_FILTER_SETUP)
         real weights[OTHER_FILTER_SAMPLES];
         real2 positions[OTHER_FILTER_SAMPLES];
-        float4 size = _ShadowAtlasSize.wwzz;
+        float4 size = _OtherShadowAtlasSize.yyxx;//other是正方形图集，x=边长,y=1/边长，yyxx→(1/s,1/s,s,s)
         OTHER_FILTER_SETUP(size, positionSTS.xy, weights, positions);
         float shadow = 0;
         for (int i = 0; i < OTHER_FILTER_SAMPLES; i++) {

@@ -5,7 +5,7 @@ using UnityEngine.Rendering;
 public class Shadows
 {
 	const int maxShadowedDirectionalLightCount = 4, maxShadowedOtherLightCount = 16; //带实时阴影的平行光数量，不能多，会降帧率
-	const int maxCascades = 4;
+	const int maxCascades = 8;
 
 	int ShadowedDirectionalLightCount, shadowedOtherLightCount; //记下已经预留了的光源数量，它从0开始增加
 
@@ -21,9 +21,11 @@ public class Shadows
 
 	private static int otherShadowAtlasId = Shader.PropertyToID("_OtherShadowAtlas"),
 		otherShadowMatricesId = Shader.PropertyToID("_OtherShadowMatrices"),
-		otherShadowTilesId = Shader.PropertyToID("_OtherShadowTiles");
+		otherShadowTilesId = Shader.PropertyToID("_OtherShadowTiles"),
+		otherShadowAtlasSizeId = Shader.PropertyToID("_OtherShadowAtlasSize");//其他光源的图集大小，与定向光分开传
 
-	private Vector4 atlasSizes;//让它同时管定向光和其他光源的了
+	private Vector4 atlasSizes;//定向光的atlas大小，xz是长方形的宽高，yw是1/分别的size
+	private Vector4 atlasSizesOther;//其他光源的atlas大小，x是正方形的大小，y是1/size
 	
 	static Matrix4x4[] dirShadowMatrices = new Matrix4x4[maxShadowedDirectionalLightCount * maxCascades],//现在看atlas大概会被分成16份
 		otherShadowMatrices = new Matrix4x4[maxShadowedOtherLightCount];//它是每个灯一个
@@ -31,6 +33,76 @@ public class Shadows
 	static Vector4[] cascadeCullingSpheres = new Vector4[maxCascades],
 		cascadeData = new Vector4[maxCascades],//它要存什么？
 		otherShadowTiles = new Vector4[maxShadowedOtherLightCount];
+
+	//级联调试用：直接从“相机 + 阴影设置”现算各级联包围球（xyz=球心, w=半径）。
+	//不依赖该相机是否真的渲染过一帧阴影（旧方案是按相机缓存渲染副作用，只有实际渲染才刷新，导致Scene里球不跟随/不出）。
+	//注意：真实渲染时第0个光源对前4级联会做“抗闪烁”纹素对齐，这里忽略它——那只是亚纹素级偏移，肉眼无差别。
+	//与 ComputeDirectionalShadowMatricesAndCullingSphere 共用 ComputeCascadeSphereGeometry，几何口径保持一致。
+	public static Vector4[] ComputeDebugCascadeSpheres(Camera camera, ShadowSettings settings)
+	{
+		int cascadeCount = Mathf.Min(settings.directional.cascadeCount, maxCascades);
+		Vector4[] spheres = new Vector4[cascadeCount];
+		if (camera == null || settings.directional.cascadeRatios == null ||
+			settings.directional.cascadeRatios.Length == 0)
+		{
+			return spheres;
+		}
+
+		//相机视锥数据（等效于渲染路径里 cascadeIndex == 0 时缓存的那份）
+		float camNear = camera.nearClipPlane;
+		Matrix4x4 VP = camera.projectionMatrix * camera.worldToCameraMatrix;
+		Matrix4x4 I_VP = VP.inverse;
+
+		Vector3 nearBL = I_VP.MultiplyPoint(new Vector3(-1f, -1f, -1f));
+		Vector3 nearTR = I_VP.MultiplyPoint(new Vector3(1f, 1f, -1f));
+
+		Vector3 camCenter = camera.transform.position;
+		Vector3 camBLDir = nearBL - camCenter;
+		Vector3 camTRDir = nearTR - camCenter;
+
+		for (int i = 0; i < cascadeCount; i++)
+		{
+			ComputeCascadeSphereGeometry(camera, settings, i,
+				camNear, camCenter, camBLDir, camTRDir,
+				out Vector3 center, out float radius);
+			spheres[i] = new Vector4(center.x, center.y, center.z, radius);
+		}
+		return spheres;
+	}
+
+	//级联几何：用相机视锥 + 分割比例算出第 cascadeIndex 级联的外接包围球。
+	//只做“相机相关的”计算，不含任何灯相关的对齐/投影矩阵，因此调试和渲染可以共用。
+	static void ComputeCascadeSphereGeometry(Camera camera, ShadowSettings settings, int cascadeIndex,
+		float camNear, Vector3 camCenter, Vector3 camBLDir, Vector3 camTRDir,
+		out Vector3 sphereCenter, out float sphereR)
+	{
+		//cascadeRatios存的是“前 cascadeCount-1 级”的内部分界，最后一级固定延伸到整个maxDistance(比例=1)
+		//所以改级联数时无需改数组：只多/少用前几个元素即可，数组长度 >= cascadeCount-1 即可
+		int cascadeCount = settings.directional.cascadeCount;
+		float[] splitArray = settings.directional.cascadeRatios;
+		float farRatio = cascadeIndex < cascadeCount - 1 ?
+			splitArray[Mathf.Min(cascadeIndex, splitArray.Length - 1)] : 1f;//最后一级覆盖整个maxDistance
+		float nearRatio = cascadeIndex > 0 ?
+			splitArray[Mathf.Min(cascadeIndex - 1, splitArray.Length - 1)] : 0f;
+		float cascadeFar = camNear + settings.maxDistance * farRatio;
+		float cascadeNear = camNear + settings.maxDistance * nearRatio;
+
+		Vector3 cascadeNearBL = camCenter + camBLDir / camNear * cascadeNear;
+		Vector3 cascadeNearTR = camCenter + camTRDir / camNear * cascadeNear;
+
+		Vector3 cascadeFarBL = camCenter + camBLDir / camNear * cascadeFar;
+		Vector3 cascadeFarTR = camCenter + camTRDir / camNear * cascadeFar;
+
+		//sphere bounding box
+		float a = Vector3.Distance(cascadeNearBL, cascadeNearTR);
+		float b = Vector3.Distance(cascadeFarBL, cascadeFarTR);
+		float l = cascadeFar - cascadeNear;
+
+		float x = (b * b - a * a) / (8 * l) + l / 2;
+
+		sphereCenter = camera.transform.position + camera.transform.forward * (cascadeNear + x);
+		sphereR = Mathf.Sqrt(x * x + a * a / 4);
+	}
 	
 	const string bufferName = "Shadows";
 
@@ -45,10 +117,17 @@ public class Shadows
 
 	ShadowSettings settings;
 
-	public void Setup(ScriptableRenderContext context, CullingResults cullingResults,
+	Camera camera;//8级级联用自定义函数算包围球时，需要相机的near/proj/view等
+
+	//自定义级联包围球计算时用到的相机视锥缓存（每灯的第0级联会刷新）
+	float camNear;
+	Vector3 camCenter, camBLDir, camTRDir;
+
+	public void Setup(ScriptableRenderContext context, Camera camera, CullingResults cullingResults,
 		ShadowSettings settings)
 	{
 		this.context = context;
+		this.camera = camera;
 		this.cullingResults = cullingResults;
 		this.settings = settings;
 
@@ -117,7 +196,8 @@ public class Shadows
 					slopeScaleBias = light.shadowBias,//Light component上边的属性，这个就是斜率bias
 					nearPlaneOffset = light.shadowNearPlane
 				};//如果某一个光要产生阴影，就记录它的index
-			return new Vector4(light.shadowStrength, settings.directional.cascadeCount * ShadowedDirectionalLightCount++, light.shadowNormalBias, maskChannel);//阴影强度和阴影图块偏移//第二个参数，决定每个灯的起始tile，例如4灯*4级联，第一个灯级联在0~3，第二个灯级联在4~7，第三个灯级联在8~11...
+			return new Vector4(light.shadowStrength, settings.directional.cascadeCount * ShadowedDirectionalLightCount++, light.shadowNormalBias, maskChannel);
+			//第二个参数，是阴影图块偏移，决定每个灯的起始tile，例如4灯*4级联，第一个灯级联在0~3(起始在0)，第二个灯级联在4~7(起始在4)，第三个灯级联在8~11...
 		}
 		return new Vector4(0f, 0f, 0f, -1f);//当光源不用shadow mask时，将索引设为 -1
 	}
@@ -195,6 +275,7 @@ public class Shadows
 		float f = 1f - settings.directional.cascadeFade;
 		buffer.SetGlobalVector(shadowDistanceFadeId, new Vector4(1f / settings.maxDistance, 1f / settings.distanceFade, 1f / (1f - f * f)));
 		buffer.SetGlobalVector(shadowAtlasSizeId, atlasSizes);
+		buffer.SetGlobalVector(otherShadowAtlasSizeId, atlasSizesOther);
 		buffer.EndSample(bufferName);
 		ExecuteBuffer();
 	}
@@ -202,23 +283,54 @@ public class Shadows
 	///渲染所有定向光阴影
 	private void RenderDirectionalShadows()
 	{
-		int atlasSize = (int)settings.directional.atlasSize;
-		atlasSizes.x = atlasSize;
-		atlasSizes.y = 1f / atlasSize;
-		buffer.GetTemporaryRT(dirShadowAtlasId, atlasSize, atlasSize, 32, FilterMode.Bilinear,RenderTextureFormat.Shadowmap);//深度格式32位，urp用的16位//GetTemporaryRT已经在隐式的SetGlobal了
-		buffer.SetRenderTarget(dirShadowAtlasId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);//保存但不读取？
-		buffer.ClearRenderTarget(true, false, Color.clear);//清深度不清颜色
-		buffer.SetGlobalFloat(shadowPancakingId, 1f);
-		buffer.BeginSample(bufferName);//专门为shadows的一个sample块
-		ExecuteBuffer();
+		int tileSize = (int)settings.directional.tileSize;//正方形小tile的边长（修改后定向光级联阴影图为长方形）
+		int cascadeCount = settings.directional.cascadeCount;
+		int atlasWidth = cascadeCount * tileSize; // 宽 = 级联数 × tile
+		int atlasHeight = ShadowedDirectionalLightCount * tileSize; // 高 = 灯数 × tile
+		//每多一个灯，往上多一行；每加一个级联，往右边多一列
+		//第一个灯在最上边还是最下边应该没啥区别，只是看代码怎么对应		我设定为从下往上增长了
 
-		int tiles = ShadowedDirectionalLightCount * settings.directional.cascadeCount;
-		int split = tiles <= 1 ? 1 : tiles <= 4 ? 2 : 4; //定向光数量和阴影级联数量乘积，决定把atlas分成多少份
-		int tileSize = atlasSize / split;
+		atlasSizes.x = atlasWidth;
+		atlasSizes.y = 1f / atlasWidth;
+		atlasSizes.z = atlasHeight;
+		atlasSizes.w = 1f / atlasHeight;
+		//这里的vector4只给定向光用了，other light另外开变量吧
+
+		buffer.GetTemporaryRT(dirShadowAtlasId, atlasWidth, atlasHeight, 32, FilterMode.Bilinear,
+			RenderTextureFormat.Shadowmap); //深度格式32位，urp用的16位//GetTemporaryRT已经在隐式的SetGlobal了
+		buffer.SetRenderTarget(dirShadowAtlasId, RenderBufferLoadAction.DontCare,
+			RenderBufferStoreAction.Store); //保存但不读取？
+		buffer.ClearRenderTarget(true, false, Color.clear); //清深度不清颜色
+		buffer.SetGlobalFloat(shadowPancakingId, 1f);
+		buffer.BeginSample(bufferName); //专门为shadows的一个sample块
+		ExecuteBuffer();
+		
+		//因为是长方形shadowmap，需要分开看长宽的数量		像是tile我自己设定大小，split分为几个的长宽，分别看级联数和灯光数
+
+		int splitX = cascadeCount, splitY = ShadowedDirectionalLightCount;
 		for (int i = 0; i < ShadowedDirectionalLightCount; i++)
 		{
-			RenderDirectionalShadows(i, split, tileSize);//由于我们目前仅支持单个带阴影的光源，因此其图块大小与图集大小相等?
+			RenderDirectionalShadows(i, splitX, splitY, tileSize);
 		}
+		
+		
+		// int atlasSize = (int)settings.directional.atlasSize;
+		// atlasSizes.x = atlasSize;
+		// atlasSizes.y = 1f / atlasSize;
+		// buffer.GetTemporaryRT(dirShadowAtlasId, atlasSize, atlasSize, 32, FilterMode.Bilinear,RenderTextureFormat.Shadowmap);//深度格式32位，urp用的16位//GetTemporaryRT已经在隐式的SetGlobal了
+		// buffer.SetRenderTarget(dirShadowAtlasId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);//保存但不读取？
+		// buffer.ClearRenderTarget(true, false, Color.clear);//清深度不清颜色
+		// buffer.SetGlobalFloat(shadowPancakingId, 1f);
+		// buffer.BeginSample(bufferName);//专门为shadows的一个sample块
+		// ExecuteBuffer();
+
+		// int tiles = ShadowedDirectionalLightCount * settings.directional.cascadeCount;
+		// int split = tiles <= 1 ? 1 : tiles <= 4 ? 2 : 4; //定向光数量和阴影级联数量乘积，决定把atlas分成多少份
+		// int tileSize = atlasSize / split;
+		// for (int i = 0; i < ShadowedDirectionalLightCount; i++)
+		// {
+		// 	RenderDirectionalShadows(i, split, tileSize);//由于我们目前仅支持单个带阴影的光源，因此其图块大小与图集大小相等?
+		// }
 
 		//buffer.SetGlobalInt(cascadeCountId, settings.directional.cascadeCount);
 		buffer.SetGlobalVectorArray(cascadeCullingSpheresId, cascadeCullingSpheres);
@@ -241,9 +353,17 @@ public class Shadows
 		buffer.SetViewport(new Rect(offset.x * tileSize,offset.y * tileSize, tileSize,tileSize));//前两个偏移量，后两个宽高
 		return offset;//也就是00，01，10，11这样的
 	}
+
+	//给长方形的定向光级联阴影用的
+	Vector2 SetTileViewport(int tileIndex, int splitX, int splitY, float tileSize)
+	{
+		Vector2 offset = new Vector2(tileIndex % splitX, tileIndex / splitX); //除法分数可能丢失，就是要让它丢失
+		buffer.SetViewport(new Rect(offset.x * tileSize, offset.y * tileSize, tileSize, tileSize)); //前两个偏移量，后两个宽高
+		return offset; //也就是00，01，10，11这样的
+	}
 	
 	//针对一个定向光，渲染定向光阴影
-	void RenderDirectionalShadows(int index, int split, int tileSize)//index是阴影光源的索引，tileSize是在图集中的图块大小
+	void RenderDirectionalShadows(int index, int splitX, int splitY, int tileSize)//index是阴影光源的索引，tileSize是在图集中的图块大小
 	{
 		ShadowedDirectionalLight light = ShadowedDirectionalLights[index];//用index获取产生阴影的light
 		// var shadowSettings = new ShadowDrawingSettings(cullingResults, light.visibleLightIndex, BatchCullingProjectionType.Orthographic);//疑似2022版需要标明是正交投影而2023版又不用标了
@@ -254,32 +374,34 @@ public class Shadows
 		
 		int cascadeCount = settings.directional.cascadeCount;
 		int tileOffset = index * cascadeCount;//这个光源的 tile 起始位置//例如4灯*4级联，第一个灯级联在0~3，第二个灯级联在4~7...//每个灯有一个tileOffset
-		Vector3 ratios = settings.directional.CascadeRatios;
 
 		float cullingFactor = Mathf.Max(0f, 0.8f - settings.directional.cascadeFade);
 
-		float tileScale = 1f / split;
+		float tileScaleX = 1f / splitX;
+		float tileScaleY = 1f / splitY;
 		for (int i = 0; i < cascadeCount; i++)
 		{
-			//第i个级联的VP矩阵，覆盖不同的距离范围，在ComputeDirectionalShadowMatricesAndCullingPrimitives里面，就已经针对级联覆盖的比例在调整矩阵了，而不是同一个灯每个级联同一矩阵
-			cullingResults.ComputeDirectionalShadowMatricesAndCullingPrimitives( //split的一些输入参数是用于级联阴影的//这个函数写了Directional，所以会自动设置为正交投影，类似的还有Spot和Point，那俩是透视投影的
-				light.visibleLightIndex, i, cascadeCount, ratios, tileSize, light.nearPlaneOffset,
-				out Matrix4x4 viewMatrix, out Matrix4x4 projectionMatrix,
-				out ShadowSplitData splitData
-			); //方向光被假设为无限远，因此它没有真正的位置。我们需要找到与光的方向匹配的view和projection matrix，用来构建一个裁剪空间立方体，与相机可见的区域重叠，能够容纳光的阴影
+			//第i个级联的VP矩阵，覆盖不同的距离范围。引擎的ComputeDirectionalShadowMatricesAndCullingPrimitives
+			//最多只支持4级（splitRatio是Vector3），8级改用自定义的包围球+矩阵计算（文章B思路）
+			Light unityLight = cullingResults.visibleLights[light.visibleLightIndex].light;
+			ComputeDirectionalShadowMatricesAndCullingSphere(
+				i, tileSize, unityLight,
+				out Vector4 cullingSphere, out Matrix4x4 viewMatrix, out Matrix4x4 projectionMatrix
+			);
+			ShadowSplitData splitData = new ShadowSplitData
+			{
+				cullingSphere = cullingSphere
+			};
 			splitData.shadowCascadeBlendCullingFactor = cullingFactor;//剔除不同级联间的，重复渲染的shadowmap
 			shadowSettings.splitData = splitData; //ShadowSplitData包含有关如何剔除投射阴影物体的信息???
 			if (index == 0)
 			{
-				// Vector4 cullingSphere = splitData.cullingSphere; //某个光源的级联裁剪球，在此只是取一次就ok，因为所有光源的级联是等效的。
-				// cullingSphere.w *= cullingSphere.w;//因为是球体距离计算，这样能省去sqrt或者length，小优化吧
-				// cascadeCullingSpheres[i] = cullingSphere;
-				SetCascadeData(i, splitData.cullingSphere, tileSize);
+				//只对第0个光源执行 SetCascadeData（因为所有光的级联裁剪球是等效的）
+				SetCascadeData(i, cullingSphere, tileSize);
 			}
 			int tileIndex = tileOffset + i;//同一个灯的每个级联的位置
-			//SetTileViewport(index, split, tileSize);
 			dirShadowMatrices[tileIndex] = ConvertToAtlasMatrix(projectionMatrix * viewMatrix, //从世界空间到光源投影空间的转换矩阵
-				SetTileViewport(tileIndex, split, tileSize), tileScale); //考虑tile的offset和atlas的split
+				SetTileViewport(tileIndex, splitX, splitY, tileSize), tileScaleX, tileScaleY); //考虑tile的offset和atlas的split
 			buffer.SetViewProjectionMatrices(viewMatrix, projectionMatrix);
 			
 			//为了解决shadow acne↓
@@ -288,6 +410,64 @@ public class Shadows
 			context.DrawShadows(ref shadowSettings); //实际在绘制阴影的是这一步//DrawShadows 只会渲染具有 ShadowCaster 通道的材质的对象
 			buffer.SetGlobalDepthBias(0f, 0f);
 		}
+	}
+
+	//支持任意级联数的自定义级联矩阵/包围球计算（文章B思路），引擎API最多只能传Vector3的splitRatio→4级
+	//注意：settings.directional.cascadeRatios 长度要 >= cascadeCount，且最后一项应是1（第8级覆盖整个maxDistance）
+	bool ComputeDirectionalShadowMatricesAndCullingSphere(int cascadeIndex, int shadowResolution, Light light,
+		out Vector4 cullingSphere, out Matrix4x4 viewMatrix, out Matrix4x4 projectionMatrix)
+	{
+		//只在与相机相关的数据上才缓存，每灯第0个级联会刷新
+		if (cascadeIndex == 0)
+		{
+			camNear = camera.nearClipPlane;
+			Matrix4x4 VP = camera.projectionMatrix * camera.worldToCameraMatrix;
+			Matrix4x4 I_VP = VP.inverse;
+
+			Vector3 nearBL = I_VP.MultiplyPoint(new Vector3(-1, -1, -1));
+			Vector3 nearTR = I_VP.MultiplyPoint(new Vector3(1, 1, -1));
+
+			camCenter = camera.transform.position;
+			camBLDir = nearBL - camCenter;
+			camTRDir = nearTR - camCenter;
+		}
+
+		//级联球几何抽到 ComputeCascadeSphereGeometry（与调试现算方法共用，保证几何口径一致）
+		ComputeCascadeSphereGeometry(camera, settings, cascadeIndex,
+			camNear, camCenter, camBLDir, camTRDir,
+			out Vector3 sphereCenter, out float sphereR);
+
+		//Anti-Shimmering：前4级做像素对齐，后面离得远随便抖
+		if (cascadeIndex < 4)
+		{
+			float squarePixelWidth = 2 * sphereR / shadowResolution;
+			Vector3 sphereCenterLS = light.transform.worldToLocalMatrix.MultiplyPoint(sphereCenter);
+			sphereCenterLS.x /= squarePixelWidth;
+			sphereCenterLS.x = Mathf.Floor(sphereCenterLS.x);
+			sphereCenterLS.x *= squarePixelWidth;
+			sphereCenterLS.y /= squarePixelWidth;
+			sphereCenterLS.y = Mathf.Floor(sphereCenterLS.y);
+			sphereCenterLS.y *= squarePixelWidth;
+			sphereCenter = light.transform.localToWorldMatrix.MultiplyPoint(sphereCenterLS);
+		}
+
+		cullingSphere.x = sphereCenter.x;
+		cullingSphere.y = sphereCenter.y;
+		cullingSphere.z = sphereCenter.z;
+		cullingSphere.w = sphereR;
+
+		float backDistance = sphereR * light.shadowNearPlane * 10;
+		Vector3 shadowMapEye = sphereCenter - light.transform.forward * backDistance;
+		Vector3 shadowMapAt = sphereCenter;
+
+		Matrix4x4 lookMatrix = Matrix4x4.LookAt(shadowMapEye, shadowMapAt, light.transform.up);
+		//沿Z镜像，匹配Unity的相机空间约定
+		Matrix4x4 scaleMatrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(1, 1, -1));
+		viewMatrix = scaleMatrix * lookMatrix.inverse;
+
+		projectionMatrix = Matrix4x4.Ortho(-sphereR, sphereR, -sphereR, sphereR, 0.0f, 2.0f * backDistance);
+
+		return true;
 	}
 
 	//从“世界坐标->裁剪空间坐标”变成“世界坐标->shadowmap对应位置的纹理坐标”
@@ -314,6 +494,41 @@ public class Shadows
 		m.m11 = (0.5f * (m.m11 + m.m31) + offset.y * m.m31) * scale;
 		m.m12 = (0.5f * (m.m12 + m.m32) + offset.y * m.m32) * scale;
 		m.m13 = (0.5f * (m.m13 + m.m33) + offset.y * m.m33) * scale;
+		//Z只需要*0.5+0.5，让深度映射到 [0,1]，否则 SAMPLE_TEXTURE2D_SHADOW 深度比较会出错
+		m.m20 = 0.5f * (m.m20 + m.m30);
+		m.m21 = 0.5f * (m.m21 + m.m31);
+		m.m22 = 0.5f * (m.m22 + m.m32);
+		m.m23 = 0.5f * (m.m23 + m.m33);
+		return m;
+	}
+
+	Matrix4x4 ConvertToAtlasMatrix(Matrix4x4 m, Vector2 offset, float scaleX, float scaleY)
+	{
+		if (SystemInfo.usesReversedZBuffer) //系统若在用反向ZBuffer，把矩阵Z都取反//传统OpenGL，0近1远是正常的Z，Vulkan/DX，Z是1近0远是reversed Z
+		{
+			m.m20 = -m.m20;
+			m.m21 = -m.m21;
+			m.m22 = -m.m22;
+			m.m23 = -m.m23;
+		}
+
+		//剪裁空间是-1到1的立方体。但是纹理坐标和深度范围0到1。通过将XYZ维度进行缩放和偏移，让shader里矩阵变换后能直接采样贴图。实际上就是对所有xyz*0.5+0.5
+		//		虽然可以通过矩阵乘法来实现这一点，但这将导致大量的零乘法和不必要的加法运算。因此，直接调整矩阵
+		//然后再加上应用图块的偏移和缩放
+		//下边的操作等同于：左乘应用*0.5+0.5的矩阵，再左乘tile偏移缩放的矩阵
+		
+		//X行统一乘scaleX
+		m.m00 = (0.5f * (m.m00 + m.m30) + offset.x * m.m30) *
+		        scaleX; //(0.5f * (m.m00 + m.m30)就是原值 * 0.5 + 0.5 的矩阵乘法展开形式，只是简化的计算结果而已
+		m.m01 = (0.5f * (m.m01 + m.m31) + offset.x * m.m31) *
+		        scaleX; //(.... + offset * m3n)*scale，就是让采样的时候，xy*scale缩放，再加上offset*scale偏移
+		m.m02 = (0.5f * (m.m02 + m.m32) + offset.x * m.m32) * scaleX;
+		m.m03 = (0.5f * (m.m03 + m.m33) + offset.x * m.m33) * scaleX;
+		//Y行统一乘scaleY
+		m.m10 = (0.5f * (m.m10 + m.m30) + offset.y * m.m30) * scaleY;
+		m.m11 = (0.5f * (m.m11 + m.m31) + offset.y * m.m31) * scaleY;
+		m.m12 = (0.5f * (m.m12 + m.m32) + offset.y * m.m32) * scaleY;
+		m.m13 = (0.5f * (m.m13 + m.m33) + offset.y * m.m33) * scaleY;
 		//Z只需要*0.5+0.5，让深度映射到 [0,1]，否则 SAMPLE_TEXTURE2D_SHADOW 深度比较会出错
 		m.m20 = 0.5f * (m.m20 + m.m30);
 		m.m21 = 0.5f * (m.m21 + m.m31);
@@ -398,8 +613,8 @@ public class Shadows
 	private void RenderOtherShadows()
 	{
 		int atlasSize = (int)settings.other.atlasSize;
-		atlasSizes.z = atlasSize;
-		atlasSizes.w = 1f / atlasSize;
+		atlasSizesOther.x = atlasSize;
+		atlasSizesOther.y = 1f / atlasSize;
 		buffer.GetTemporaryRT(otherShadowAtlasId, atlasSize, atlasSize, 32, FilterMode.Bilinear,
 			RenderTextureFormat.Shadowmap); //深度格式32位，urp用的16位//GetTemporaryRT已经在隐式的SetGlobal了
 		buffer.SetRenderTarget(otherShadowAtlasId, RenderBufferLoadAction.DontCare,
@@ -473,7 +688,7 @@ public class Shadows
 	///其他灯光的一些信息，xy是本个灯对应的tile的最小UV位置，z是xy的uv范围大小，w是灯的法线bias
 	void SetOtherTileData(int index, Vector2 offset, float scale, float bias)
 	{
-		float border = atlasSizes.w * 0.5f;//半个纹素大小
+		float border = atlasSizesOther.y * 0.5f;//半个纹素大小（other的atlas是正方形，y存了1/size）
 		Vector4 data;
 		data.x = offset.x * scale + border;
 		data.y = offset.y * scale + border;

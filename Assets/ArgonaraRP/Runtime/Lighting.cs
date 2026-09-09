@@ -45,12 +45,12 @@ public class Lighting
     
     Shadows shadows = new Shadows();//Lighting管理Shadows的一个实例
     
-    public void Setup(ScriptableRenderContext context, CullingResults cullingResults, 
+    public void Setup(ScriptableRenderContext context, Camera camera, CullingResults cullingResults, 
         ShadowSettings shadowSettings, bool useLightsPerObject, int renderingLayerMask)
     {
         this.cullingResults = cullingResults;//执行物体剔除的时候，unity会确定哪些灯光会影响相机可见的空间，so需要剔除结果，以更好支持多光源（当然就不只是多个平行光）
         buffer.BeginSample(bufferName);
-        shadows.Setup(context, cullingResults, shadowSettings);//调用初始化阴影
+        shadows.Setup(context, camera, cullingResults, shadowSettings);//调用初始化阴影
         SetupLights(useLightsPerObject, renderingLayerMask);
         shadows.Render(); //上一行在定义光的时候，看谁要生成阴影，这里渲染
         buffer.EndSample(bufferName);
@@ -73,29 +73,29 @@ public class Lighting
             Light light = visibleLight.light;
             if ((light.renderingLayerMask & renderingLayerMask) != 0)//相机渲染层与灯光层有重叠，该灯光有效
             {
-            switch (visibleLight.lightType)
-            {
-                case LightType.Directional:
-                    if (dirLightCount < maxDirLightCount)
-                    {
-                        SetupDirectionalLight(dirLightCount++, i, ref visibleLight, light);
-                    }
-                    break;
-                case LightType.Point:
-                    if (otherLightCount < maxOtherLightCount)
-                    {
-                        newIndex = otherLightCount;
-                        SetupPointLight(otherLightCount++, i, ref visibleLight, light);
-                    }
-                    break;
-                case LightType.Spot:
-                    if (otherLightCount < maxOtherLightCount)
-                    {
-                        newIndex = otherLightCount;
-                        SetupSpotLight(otherLightCount++, i, ref visibleLight, light);
-                    }
-                    break;
-            }
+                switch (visibleLight.lightType)
+                {
+                    case LightType.Directional:
+                        if (dirLightCount < maxDirLightCount)
+                        {
+                            SetupDirectionalLight(dirLightCount++, i, ref visibleLight, light);
+                        }
+                        break;
+                    case LightType.Point:
+                        if (otherLightCount < maxOtherLightCount)
+                        {
+                            newIndex = otherLightCount;
+                            SetupPointLight(otherLightCount++, i, ref visibleLight, light);
+                        }
+                        break;
+                    case LightType.Spot:
+                        if (otherLightCount < maxOtherLightCount)
+                        {
+                            newIndex = otherLightCount;
+                            SetupSpotLight(otherLightCount++, i, ref visibleLight, light);
+                        }
+                        break;
+                }
             }//renderingLayerMask检查闭合
             if (useLightsPerObject)
             {

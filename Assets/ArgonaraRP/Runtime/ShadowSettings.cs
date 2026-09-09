@@ -11,24 +11,27 @@ public class ShadowSettings
 
     public enum TextureSize
     {
-        _256 = 256, _512 = 512, _1024 = 1024, _2048 = 2048, _4096 = 4096, _8192 = 8192
+        _64 = 64, _256 = 256, _512 = 512, _1024 = 1024, _2048 = 2048, _4096 = 4096, _8192 = 8192
     }
 
+    //定向光阴影
     ///将来我希望把它改成叫DirectionalCascadeSetting，暂时隐忍
     [System.Serializable]
-    public struct Directional//定向光阴影
+    public struct Directional
     {
-        public TextureSize atlasSize;//图集大小，说是图集，是因为会用一张大贴图包含多个shadowmap
+        //public TextureSize atlasSize;//图集大小，说是图集，是因为会用一张大贴图包含多个shadowmap
+        public TextureSize tileSize;//图集里的一个tile的大小，这里用tile大小，和灯数量，级联数量，共同决定整个shadowmap的大小，而不是整个预设固定的图片大小
 
         public FilterMode filter;//滤波模式
         
         //在某个距离上，阴影贴图纹素恰好能映射到一个单独的屏幕像素，此时阴影分辨率在理论上最佳。
         //级联阴影贴图，思想是投射阴影的物体被渲染多次，因此每个光源在图集中都有多个图块，称为级联。第一个级联只覆盖靠近相机的小区域，而后续的级联逐渐放大，以相同数量的纹素覆盖越来越大的区域。
-        [Range(1, 4)] public int cascadeCount;//为什么教程说“Unity的阴影代码支持每个定向光最多四个级联阴影贴图”？做成更多也没事吧
-        [Range(0f, 1f)] public float cascadeRatio1, cascadeRatio2, cascadeRatio3;//各层级联覆盖阴影距离的的比例逐级增加，ratio4默认是1，最大的级联要覆盖整个范围
+        [Range(1, 8)] public int cascadeCount;//为什么教程说“Unity的阴影代码支持每个定向光最多四个级联阴影贴图”？做成更多也没事吧
+        //[Range(0f, 1f)] public float cascadeRatio1, cascadeRatio2, cascadeRatio3;//各层级联覆盖阴影距离的的比例逐级增加，ratio4默认是1，最大的级联要覆盖整个范围
 
-        public Vector3 CascadeRatios =>
-            new Vector3(cascadeRatio1, cascadeRatio2, cascadeRatio3);
+        public float[] cascadeRatios;//前 cascadeCount-1 个是“各级联的内部分界比例”，最后一级固定延伸到1(整个阴影距离)。
+        //改级联数时数组不必跟着改：只取前 cascadeCount-1 个，多余的忽略。长度 >= cascadeCount-1 即可。
+        //假如要8个级联，那么需要7个表示占比的数字，就用数组了
 
         [Range(0.001f, 1f)] public float cascadeFade;//级联阴影最大层与外边的交界处，也要有渐隐
 
@@ -43,23 +46,25 @@ public class ShadowSettings
 
     public Directional directional = new Directional
     {
-        atlasSize = TextureSize._1024,
+        //atlasSize = TextureSize._1024,
+        tileSize = TextureSize._64,
         filter = FilterMode.PCF2x2,
         
-        cascadeCount = 4,
-        cascadeRatio1 = 0.1f,
-        cascadeRatio2 = 0.25f,
-        cascadeRatio3 = 0.5f,
+        cascadeCount = 8,
+        cascadeRatios = new float[] { 0.05f, 0.1f, 0.2f, 0.35f, 0.5f, 0.65f, 0.8f },//7个内部分界，8级时最后一级=0.8~1.0
+        
         
         cascadeFade = 0.1f,
         cascadeBlend = Directional.CascadeBlendMode.Hard
     };
 
+    //滤波设置
     public enum FilterMode
     {
         PCF2x2, PCF3x3, PCF5x5, PCF7x7
     }
 
+    //其他光源的阴影
     [System.Serializable]
     public struct Other
     {

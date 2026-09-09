@@ -29,13 +29,19 @@ MonoBehaviour:
     maxDistance: 100
     distanceFade: 0.1
     directional:
-      atlasSize: 2048
+      tileSize: 512
       filter: 3
-      cascadeCount: 4
-      cascadeRatio1: 0.156
-      cascadeRatio2: 0.25
-      cascadeRatio3: 0.5
-      cascadeFade: 0.1
+      cascadeCount: 8
+      cascadeRatios:
+      - 0.00625
+      - 0.03125
+      - 0.08125
+      - 0.18125
+      - 0.35625
+      - 0.60625
+      - 0.88125
+      - 1
+      cascadeFade: 0.5
       cascadeBlend: 1
     other:
       atlasSize: 1024

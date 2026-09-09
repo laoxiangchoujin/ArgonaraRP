@@ -87,7 +87,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
         buffer.BeginSample(SampleName);
         buffer.SetGlobalVector(bufferSizeId, new Vector4(1f/bufferSize.x, 1f/bufferSize.y, bufferSize.x, bufferSize.y));//渲染缩放后，替代_ScreenParams
         ExecuteBuffer();
-        lighting.Setup(context, cullingResults, shadowSettings, useLightsPerObject,
+        lighting.Setup(context, camera, cullingResults, shadowSettings, useLightsPerObject,
             cameraSettings.maskLights ? cameraSettings.renderingLayerMask : -1);//相机可选的灯光渲染层过滤
         postFXStack.Setup(context, camera, bufferSize, postFXSettings, useHDR, colorLUTResolution, cameraSettings.finalBlendMode, bufferSettings.bicubicRescaling);
         buffer.EndSample(SampleName);
