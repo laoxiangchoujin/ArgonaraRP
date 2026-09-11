@@ -51,7 +51,8 @@ Shader "Hidden/ArgonaraRP/Camera Renderer"//hidden的不会在inspector里显示
 			#pragma target 3.5
 			
 			
-            #pragma multi_compile _ _DIRECTIONAL_PCF3 _DIRECTIONAL_PCF5 _DIRECTIONAL_PCF7//只有一个_的是没有这些关键字，也就是pcf2x2
+            #pragma multi_compile _ _DIRECTIONAL_PCSS//PCSS 单独一组（不再与 PCF 档位互斥）
+            #pragma multi_compile _ _SHADOW_PCF3 _SHADOW_PCF5 _SHADOW_PCF7//定向光与其他光共用同一套 PCF 档位；单个“_”为硬件PCF2x2
             #pragma multi_compile _ _CASCADE_BLEND_SOFT _CASCADE_BLEND_DITHER
 			
 			//1.！和forward不一样的地方！shader_feature的variant选择靠材质关键字，DrawProcedural用的material上没开_RECEIVE_SHADOWS keyword，所以会是无阴影。
@@ -63,7 +64,6 @@ Shader "Hidden/ArgonaraRP/Camera Renderer"//hidden的不会在inspector里显示
 			//2.！和forward不一样的地方！延迟 Pass 是 Fullscreen Quad，没有"逐物体"的概念。_LIGHTS_PER_OBJECT是让点光源循环走 unity_LightIndices（逐物体索引）
 			//这对全屏 Pass 没意义，索引全是 0，所以注释掉，走全局循环GetOtherLightCount()
             //#pragma multi_compile _ _LIGHTS_PER_OBJECT//针对点光源或聚光灯的逐物体光照
-            #pragma multi_compile _ _OTHER_PCF3 _OTHER_PCF5 _OTHER_PCF7
             #pragma multi_compile_instancing
 			
 			#pragma vertex DefaultPassVertex

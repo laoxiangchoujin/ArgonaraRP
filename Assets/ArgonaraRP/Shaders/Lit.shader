@@ -82,7 +82,8 @@ Shader "Argonara RP/Lit"
             
             #pragma shader_feature _CLIPPING
             #pragma shader_feature _PREMULTIPLY_ALPHA
-            #pragma multi_compile _ _DIRECTIONAL_PCF3 _DIRECTIONAL_PCF5 _DIRECTIONAL_PCF7//只有一个_的是没有这些关键字，也就是pcf2x2
+            #pragma multi_compile _ _DIRECTIONAL_PCSS//PCSS 单独一组（不再与 PCF 档位互斥）
+            #pragma multi_compile _ _SHADOW_PCF3 _SHADOW_PCF5 _SHADOW_PCF7//定向光与其他光共用同一套 PCF 档位；单个“_”为硬件PCF2x2
             #pragma multi_compile _ _CASCADE_BLEND_SOFT _CASCADE_BLEND_DITHER
             #pragma shader_feature _RECEIVE_SHADOWS
             #pragma multi_compile _ LIGHTMAP_ON//不是_LIGHTMAP_ON？
@@ -93,7 +94,6 @@ Shader "Argonara RP/Lit"
             #pragma shader_feature _EMISSION
             #pragma shader_feature _DETAIL_MAP
             #pragma multi_compile _ _LIGHTS_PER_OBJECT//针对点光源或聚光灯的逐物体光照
-            #pragma multi_compile _ _OTHER_PCF3 _OTHER_PCF5 _OTHER_PCF7
             #pragma multi_compile_instancing
             #pragma vertex LitPassVertex
             #pragma fragment LitPassFragment

@@ -3,30 +3,21 @@
 
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Shadow/ShadowSamplingTent.hlsl"
 
-#if defined(_DIRECTIONAL_PCF3)
-    #define DIRECTIONAL_FILTER_SAMPLES 4
-    #define DIRECTIONAL_FILTER_SETUP SampleShadow_ComputeSamples_Tent_3x3
-#elif defined(_DIRECTIONAL_PCF5)
-    #define DIRECTIONAL_FILTER_SAMPLES 9
-    #define DIRECTIONAL_FILTER_SETUP SampleShadow_ComputeSamples_Tent_5x5
-#elif defined(_DIRECTIONAL_PCF7)
-    #define DIRECTIONAL_FILTER_SAMPLES 16
-    #define DIRECTIONAL_FILTER_SETUP SampleShadow_ComputeSamples_Tent_7x7
+//定向光与其他光源共用同一套滤波档位：合并成一组关键字，
+//变体数由 方向光5 × 其他光4 = 20 降到 4（_DIRECTIONAL_PCSS 已单独拆成一条 multi_compile）
+#if defined(_SHADOW_PCF3)
+    #define SHADOW_FILTER_SAMPLES 4
+    #define SHADOW_FILTER_SETUP SampleShadow_ComputeSamples_Tent_3x3
+#elif defined(_SHADOW_PCF5)
+    #define SHADOW_FILTER_SAMPLES 9
+    #define SHADOW_FILTER_SETUP SampleShadow_ComputeSamples_Tent_5x5
+#elif defined(_SHADOW_PCF7)
+    #define SHADOW_FILTER_SAMPLES 16
+    #define SHADOW_FILTER_SETUP SampleShadow_ComputeSamples_Tent_7x7
 #endif
 
 #define MAX_SHADOWED_DIRECTIONAL_LIGHT_COUNT 4
 #define MAX_CASCADE_COUNT 8
-
-#if defined(_OTHER_PCF3)
-    #define OTHER_FILTER_SAMPLES 4
-    #define OTHER_FILTER_SETUP SampleShadow_ComputeSamples_Tent_3x3
-#elif defined(_OTHER_PCF5)
-    #define OTHER_FILTER_SAMPLES 9
-    #define OTHER_FILTER_SETUP SampleShadow_ComputeSamples_Tent_5x5
-#elif defined(_OTHER_PCF7)
-    #define OTHER_FILTER_SAMPLES 16
-    #define OTHER_FILTER_SETUP SampleShadow_ComputeSamples_Tent_7x7
-#endif
 
 #define MAX_SHADOWED_OTHER_LIGHT_COUNT 16
 
@@ -46,6 +37,17 @@ CBUFFER_START(_CustomShadows)
     float4 _ShadowAtlasSize;//定向光的图集大小：x=像素宽, y=1/宽, z=像素高, w=1/高（图集可能是长方形）
     float4 _OtherShadowAtlasSize;//其他光源的图集大小：x=正方形边长, y=1/边长（与定向光解耦，各传各的）
     float4 _ShadowDistanceFade;//x是1/最大距离，y是1/距离衰减，z是cascadeFade的一个带平方的因子
+    //PCSS（shader里只对主定向光生效）
+    float _DirectionalPCSSSearchRadius;//Blocker Search 世界半径锚点(= 最细级联的N个纹素)，shader里再保证每个级联≥1个自己的纹素
+    float _DirectionalPCSSPenumbraRef;//深度差归一化的参考长度(世界，= 最细级联球半径)
+    float _DirectionalPCSSPenumbraMaxWorld;//半影上限(世界长度，= 最细级联的N个纹素；与级联无关)
+    int _DirectionalPCSSBlockerSamples;
+    int _DirectionalPCSSSamples;
+    float _DirectionalPCSSPenumbraPow;
+    float _DirectionalPCSSPadding;//基础深度偏移(占光相机深度范围的比例)
+    float _DirectionalPCSSSlopeBias;//深度偏移随斜率(掠射角)与核半径的强度
+    float _DirectionalPCSSNormalBias;//沿几何法线偏移着色点(单位:阴影纹素世界尺寸的倍数)
+    float3 _DirectionalPCSSLightDir;//主光方向(指向光源)
 CBUFFER_END
 
 //per-light的阴影数据    "这个光源的阴影有多强、它在 atlas 的哪个位置、法线偏移多少"
@@ -84,15 +86,15 @@ struct ShadowData
 
 float FilterDirectionalShadow(float3 positionSTS)
 {
-    #if defined(DIRECTIONAL_FILTER_SETUP)//当定义了DIRECTIONAL_FILTER_SETUP，会执行多次采样
-    float weights[DIRECTIONAL_FILTER_SAMPLES];
-    float2 positions[DIRECTIONAL_FILTER_SAMPLES];
+    #if defined(SHADOW_FILTER_SETUP)//当定义了SHADOW_FILTER_SETUP，会执行多次采样
+    float weights[SHADOW_FILTER_SAMPLES];
+    float2 positions[SHADOW_FILTER_SAMPLES];
     //定向光图集可能是长方形：存的是x=像素宽,y=1/宽,z=像素高,w=1/高
     //而tent filter要的size是：.xy=纹素尺寸(1/宽,1/高)，.zw=像素尺寸(宽,高)
     float4 size = float4(_ShadowAtlasSize.y, _ShadowAtlasSize.w, _ShadowAtlasSize.x, _ShadowAtlasSize.z);
-    DIRECTIONAL_FILTER_SETUP(size, positionSTS.xy, weights, positions);
+    SHADOW_FILTER_SETUP(size, positionSTS.xy, weights, positions);
     float shadow = 0;
-    for (int i = 0; i < DIRECTIONAL_FILTER_SAMPLES; i++) {
+    for (int i = 0; i < SHADOW_FILTER_SAMPLES; i++) {
         shadow += weights[i] * SampleDirectionalShadowAtlas(
             float3(positions[i].xy, positionSTS.z)
         );
@@ -103,21 +105,249 @@ float FilterDirectionalShadow(float3 positionSTS)
     #endif
 }
 
+//=========================================================
+//====== PCSS（仅主定向光；世界单位半径 → tile内uv半径）======
+//=========================================================
+#define PCSS_MAX_SAMPLES 32
+
+//固定32点泊松盘：前16点为AKG文章表，后16点为其0.5倍内圈。Blocker Search 与 PCF 共用。
+static const float2 pcssDisk[PCSS_MAX_SAMPLES] = {
+float2(0.04369664,-0.17067612),float2(0.94583898,0.92166932),
+float2(-0.95956321,0.66523969),float2(0.97674768,-0.79591038),
+float2(-0.85792788,-0.82574140),float2(-0.12482558,0.78354600),
+float2(0.95352218,0.20969104),float2(-0.88394168,-0.13116675),
+float2(0.04649611,-0.81211898),float2(0.33353343,0.34127574),
+float2(0.62759564,-0.20698852),float2(0.42848260,0.99769401),
+float2(-0.39984576,-0.42244461),float2(-0.15269040,0.29178823),
+float2(-0.39955182,-0.95871164),float2(-0.76345115,0.27984204),
+float2(0.30621665,-0.49341679),float2(-0.47088878,0.54846738),
+float2(0.39526239,-0.87954906),float2(-0.40688747,0.98402249),
+float2(0.95723668,0.59831713),float2(-0.06737845,-0.51114882),
+float2(-0.71329343,0.88933783),float2(-0.28098420,-0.12593609),
+float2(-0.70520720,-0.51510397),float2(0.92732552,-0.23311696),
+float2(0.33652984,-0.12550643),float2(-0.50249371,0.15231467),
+float2(0.55631350,0.74002430),float2(0.58739541,-0.55215062),
+float2(-0.96161360,-0.39685037),float2(0.90190522,-0.53315949)
+};
+
+//归一化深度 → 距光相机近平面的相对距离（乘深度范围才是世界距离；PCSS只求比值，该因子会约掉）
+float PCSSDepthToNear (float d)
+{
+    #if UNITY_REVERSED_Z
+        return 1.0 - d;
+    #else
+        return d;
+    #endif
+}
+
+//该级联tile里一个纹素对应的世界尺寸（PCSS各bias的单位之一）
+float PCSSWorldTexelSize (int cascadeIndex)
+{
+    int cascadeCount = max(_CascadeCount, 1);
+    float tileSizePx = max(_ShadowAtlasSize.x, 1.0) / cascadeCount;//atlas每级联一列，tile等宽
+    return max(_CascadeData[cascadeIndex].z, 1e-4) / tileSizePx;
+}
+
+//PCSS 的 bias 用一个稳定的几何法线：直接用 Surface 里的内插法线（不受法线图影响），
+//并翻正到朝向光源一侧。旧的屏幕导数法线在画面边缘会算歪 → 斜率爆炸 → 阴影整块消失。
+float3 PCSSBiasNormal (Surface surfaceWS)
+{
+    float3 n = surfaceWS.interpolatedNormal;
+    n *= (dot(n, _DirectionalPCSSLightDir) < 0.0 ? -1.0 : 1.0);
+    return n;
+}
+
+//PCSS自己的“沿法线偏移着色点”，与PCF路径解耦：调PCF滤波不会带动它。
+//口径与PCF对齐：PCF的偏移是 shadowNormalBias * filterSize * 1.414，而 filterSize 在 PCF2x2(最细档) 时 = 1纹素，
+//所以这里同样取 1.414 纹素 → 把 pcssNormalBias 填成主光的 Shadow Normal Bias，开关PCSS时阴影边界就不会移动。
+//(原来还乘了 (1-nl)：地面+45°光只剩 0.18 纹素，比 PCF 小约 8 倍 → 阴影远侧边缘外扩，看起来像"阴影整体平移")
+float3 PCSSNormalBiasOffset (int cascadeIndex, float3 nWS)
+{
+    return nWS * (PCSSWorldTexelSize(cascadeIndex) * _DirectionalPCSSNormalBias * 1.4142136);
+}
+
+//统一到世界距离比较：采样点比着色点更靠近光源、且超出bias余量 → 判定为遮挡/阴影
+bool PCSSShadowed (float sampleZ, float receiverDist, float biasWS, float depthRange)
+{
+    return PCSSDepthToNear(sampleZ) * depthRange + biasWS < receiverDist;
+}
+
+//阴影图是深度纹理，读原始深度只能用 point 采样（对比采样器读不到深度值）
+float SamplePCSSDepth (float2 uv)
+{
+    return SAMPLE_TEXTURE2D(_DirectionalShadowAtlas, sampler_point_clamp, uv).r;
+}
+
+//旋转泊松盘样本
+float2 RotatePCSSSample (float2 dir, float2 sinCos)
+{
+    return float2(sinCos.y * dir.x - sinCos.x * dir.y,
+                  sinCos.x * dir.x + sinCos.y * dir.y);
+}
+
+//主定向光的 PCSS：Blocker Search → 半影半径(世界单位) → 变半径 PCF
+//slope = tanθ(由几何法线与光方向得出)，用于随掠射角变化的深度偏移
+float PCSSDirectionalShadow (float3 positionSTS, int tileIndex, float2 sinCos, float slope)
+{
+    int cascadeCount = max(_CascadeCount, 1);
+    int cascadeIndex = tileIndex % cascadeCount;//tileIndex = 灯起始偏移(灯序号×级联数) + 级联索引
+
+    //atlas：每灯一行、每级联一列，tile是正方形像素块。算出本tile的uv范围并夹住采样，避免大半径读到隔壁tile
+    float uvWidth = 1.0 / cascadeCount;
+    float uvHeight = max(_ShadowAtlasSize.x, 1.0) * uvWidth / max(_ShadowAtlasSize.z, 1.0);
+    float2 uvSize = float2(uvWidth, uvHeight);
+    float2 uvMin = float2(tileIndex % cascadeCount, tileIndex / cascadeCount) * uvSize;
+    float2 halfTexel = _ShadowAtlasSize.yw * 0.5;
+    float2 uvClampMin = uvMin + halfTexel;
+    float2 uvClampMax = uvMin + uvSize - halfTexel;
+    //采样核必须装得进本tile：否则把越界样本逐个clamp回边界，会让它们挤成一列纹素、读到别处深度
+    float2 roomToTile = min(positionSTS.xy - uvClampMin, uvClampMax - positionSTS.xy);
+    float maxKernelUV = max(min(roomToTile.x, roomToTile.y), _ShadowAtlasSize.y);//至少1纹素
+
+    float orthoWidth = max(_CascadeData[cascadeIndex].z, 1e-4);//该级联tile覆盖的正交世界宽度
+    float depthRange = max(_CascadeData[cascadeIndex].w, 1e-4);//光相机深度范围(far-near)，深度→世界距离用
+    float worldToUV = uvWidth / orthoWidth;//世界长度 → atlas uv 长度
+    float texelWorld = orthoWidth / max(_ShadowAtlasSize.x * uvWidth, 1e-4);//1纹素的世界尺寸
+
+    float receiverDist = PCSSDepthToNear(positionSTS.z) * depthRange;//世界距离
+    //固定深度偏移：padding 定义为深度范围的比例，所以乘 depthRange
+    float baseBiasWS = _DirectionalPCSSPadding * depthRange;
+
+    //① Blocker Search：只在“确实遮挡”的样本上统计平均遮挡深度
+    int blockerSamples = clamp(_DirectionalPCSSBlockerSamples, 4, PCSS_MAX_SAMPLES);
+    //搜索半径(世界)：C# 上传的是“最细级联的 N 个纹素”那么大，这里再保证每个级联至少能搜到自己 1 个纹素
+    //(否则最粗的几个级联连 1 个纹素都搜不到 → 永远找不到 blocker → 那些级联变成硬阴影)
+    //下限取1而不是2：它正比于级联尺寸，取2会让粗级联搜的世界范围反超锚点(粗级联反而更糊)
+    float searchWorld = max(_DirectionalPCSSSearchRadius, texelWorld);
+    float searchUV = min(searchWorld * worldToUV, maxKernelUV);//核按剩余空间整体缩小
+    //blocker search 的容差要覆盖“搜索半径内接收面自身的深度起伏”，也就是正好等于"核跨过的地形起伏"。
+    //这里不加 clamp：加了会让平面自身的邻居被误判成遮挡物(假 blocker)，而且细级联被截得最厉害。
+    float biasBlockerWS = baseBiasWS + (texelWorld + searchWorld) * slope * _DirectionalPCSSSlopeBias;
+    float blockerSum = 0.0;//世界距离
+    int blockerCount = 0;
+    for (int i = 0; i < blockerSamples; i++)
+    {
+        float2 offset = RotatePCSSSample(pcssDisk[i], sinCos) * searchUV;
+        float2 uv = clamp(positionSTS.xy + offset, uvClampMin, uvClampMax);
+        float sampleZ = SamplePCSSDepth(uv);
+        if (PCSSShadowed(sampleZ, receiverDist, biasBlockerWS, depthRange))
+        {
+            blockerSum += PCSSDepthToNear(sampleZ) * depthRange;
+            blockerCount++;
+        }
+    }
+
+    //② 半影：深度差用"与级联无关的世界参考长度"归一化，半影上限本身也是世界长度 → 各级联视觉一致
+    float radiusUV = 0.0;
+    float penumbraWS = 0.0;
+    if (blockerCount > 0)
+    {
+        float blockerDist = blockerSum / blockerCount;
+        //深度差是纯世界量(与级联无关)，除以一个固定的世界参考长度 → 同一块几何在各级联得到同一个比值。
+        //(旧的 (d_r-d_b)/d_b 里 d_b 含着"光相机到影机的距离"，它正比于级联半径 →
+        // 同一个深度差，细级联算出的比值比粗级联大几十~几百倍 → 这就是"内侧特别糊"的根因)
+        float ratio = saturate((receiverDist - blockerDist) / max(_DirectionalPCSSPenumbraRef, 1e-5));
+        //按命中遮挡物的比例淡入，避免亮侧边缘硬切/闪烁
+        float hitFade = saturate((float)blockerCount / max(1.0, (float)blockerSamples * 0.5));
+        //半影上限是世界长度(与级联无关)；级联相关的量只出现在下面这一步“世界→uv”的换算里
+        penumbraWS = ratio * _DirectionalPCSSPenumbraMaxWorld * hitFade;//给下面 bias 用的世界核半径
+        radiusUV = pow(penumbraWS * worldToUV, _DirectionalPCSSPenumbraPow);
+    }
+    //下限抬到"PCF 档位本身的核半径"：PCF 是下限、PCSS 在它之上再加半影 → PCSS 永远不会比 PCF 更硬。
+    //(不加这个下限时：世界半影在粗级联里往往不足1个纹素 → 半径归零；而 PCSS 的深度是 point 采样，
+    // 没有 PCF 那种硬件双线性比较带来的亚纹素过渡 → 它会退化成比 PCF2x2 还硬的二值边。
+    // 遮挡物没搜到时同样走这条下限，于是那种情况退化成"和 PCF 一样"，而不是硬边)
+    //PCF 核的世界半径 = filterSize = _CascadeData.y / 1.414（y 里存的是 filterSize*1.414）
+    float pcfKernelWS = _CascadeData[cascadeIndex].y * 0.70710678;
+    if (penumbraWS < pcfKernelWS)
+    {
+        penumbraWS = pcfKernelWS;//bias 跟着同一个核半径走，保持"核大→深度偏移也大"
+        radiusUV = pow(penumbraWS * worldToUV, _DirectionalPCSSPenumbraPow);
+    }
+    radiusUV = max(radiusUV, _ShadowAtlasSize.y);//至少1纹素，避免半径0退化成单样本硬边
+    radiusUV = min(radiusUV, maxKernelUV);//核按剩余空间整体缩小（替代逐样本clamp）
+
+    //③ 变半径 PCF：bias 同样随核半径与斜率变化
+    float biasPCFWS = baseBiasWS + (texelWorld + penumbraWS) * slope * _DirectionalPCSSSlopeBias;
+    //保险丝：最多偏到"到光源距离的一半"，避免斜率估歪时把阴影整块抹掉。
+    //(原来用 depthRange*0.05 —— 它正比于级联尺寸，细级联被截得厉害)
+    biasPCFWS = min(biasPCFWS, receiverDist * 0.5);
+    int pcfSamples = clamp(_DirectionalPCSSSamples, 8, PCSS_MAX_SAMPLES);
+    float shadow = 0.0;
+    for (int j = 0; j < pcfSamples; j++)
+    {
+        float2 offset = RotatePCSSSample(pcssDisk[j], sinCos) * radiusUV;
+        float2 uv = clamp(positionSTS.xy + offset, uvClampMin, uvClampMax);
+        shadow += PCSSShadowed(SamplePCSSDepth(uv), receiverDist, biasPCFWS, depthRange) ? 0.0 : 1.0;
+    }
+    return shadow / pcfSamples;
+}
+
+//每2x2屏幕像素共享的泊松盘旋转角（IGN式小参数哈希，避免大整数sin精度退化）
+float2 GetPCSSRotation (Surface surfaceWS)
+{
+    #if defined(_DIRECTIONAL_PCSS)
+        float4 clipPos = TransformWorldToHClip(surfaceWS.position);
+        float2 screenUV = clipPos.xy / clipPos.w * 0.5 + 0.5;
+        float2 blockIdx = floor(screenUV * _ScreenParams.xy * 0.5);
+        float rotAngle = frac(52.9829189 * frac(0.06711056 * blockIdx.x + 0.00583715 * blockIdx.y)) * 6.2831853;
+        float s, c;
+        sincos(rotAngle, s, c);
+        return float2(s, c);
+    #else
+        return float2(0.0, 1.0);
+    #endif
+}
+
+//主光一定是第一行tile（灯起始偏移为0），据此决定是否走PCSS
+float SampleDirectionalShadowFiltered (float3 positionSTS, int tileIndex, float2 sinCos, bool mainLight, float slope)
+{
+    #if defined(_DIRECTIONAL_PCSS)
+        if (mainLight)
+        {
+            return PCSSDirectionalShadow(positionSTS, tileIndex, sinCos, slope);
+        }
+    #endif
+    return FilterDirectionalShadow(positionSTS);
+}
+
 float GetCascadedShadow(DirectionalShadowData directional, ShadowData global, Surface surfaceWS)
 {
     // tileIndex = 光源在atlas的起始偏移(cascadeCount * lightIndex) + 当前级联索引(cascadeIndex)
     // CPU端ReserveDirectionalShadows的.y是每个灯的起始偏移，存入Light.hlsl的_DirectionalLightShadowData[lightIndex].y，，，
     //      RenderDirectionalShadows按tileIndex索引写入dirShadowMatrices[tileIndex]
     // GPU端Light.hlsl里GetDirectionalShadowData从_DirectionalLightShadowData[lightIndex].y + cascadeIndex 还原tileIndex，用它取对应矩阵，保证矩阵数组索引一一对应
-    float3 normalBias = surfaceWS.interpolatedNormal  * (directional.normalBias * _CascadeData[global.cascadeIndex].y);;//这个y是，shadow map的tile纹素在世界空间中对应的长度，在阴影采样时，在法线方向上偏移这么多，避免阴影边缘的锯齿
+    //主光=第一行tile(灯起始偏移为0)。只有它走PCSS，且用PCSS自己的法线偏移/几何法线/光方向
+    bool mainLight = false;
+    float3 nGeo = float3(0.0, 0.0, 1.0);
+    float nl = 1.0;
+    float slope = 0.0;
+    float2 pcssSinCos = float2(0.0, 1.0);
+    #if defined(_DIRECTIONAL_PCSS)
+        //bias 用的法线：稳定的内插法线，翻正到朝光一侧（不再用屏幕导数，避免画面边缘算歪）
+        nGeo = PCSSBiasNormal(surfaceWS);
+        nl = saturate(dot(nGeo, _DirectionalPCSSLightDir));
+        slope = min(sqrt(max(0.0, 1.0 - nl * nl)) / max(nl, 0.1), 4.0);//tanθ，clamp防掠射角爆炸
+        mainLight = directional.tileIndex < _CascadeCount;
+        if (mainLight)
+        {
+            pcssSinCos = GetPCSSRotation(surfaceWS);//每2x2屏幕像素共享的旋转角
+        }
+    #endif
+
+    float3 normalBias = (mainLight ?
+        PCSSNormalBiasOffset(global.cascadeIndex, nGeo) :
+        surfaceWS.interpolatedNormal * (directional.normalBias * _CascadeData[global.cascadeIndex].y));//y是tile纹素在世界空间中的长度，沿法线偏移避免锯齿
     float3 positionSTS = mul(_DirectionalShadowMatrices[directional.tileIndex],float4(surfaceWS.position +normalBias, 1.0)).xyz;
-    float shadow = FilterDirectionalShadow(positionSTS);//正带上pcf滤波，去采样
+    float shadow = SampleDirectionalShadowFiltered(positionSTS, directional.tileIndex, pcssSinCos, mainLight, slope);//pcf 或 PCSS 采样
     
     if (global.cascadeBlend < 1.0)//在两个级联的交界混合区域
     {
-        normalBias = surfaceWS.interpolatedNormal  * (directional.normalBias * _CascadeData[global.cascadeIndex + 1].y);
+        normalBias = (mainLight ?
+            PCSSNormalBiasOffset(global.cascadeIndex + 1, nGeo) :
+            surfaceWS.interpolatedNormal * (directional.normalBias * _CascadeData[global.cascadeIndex + 1].y));
         positionSTS = mul(_DirectionalShadowMatrices[directional.tileIndex + 1],float4(surfaceWS.position +normalBias, 1.0)).xyz;
-        shadow = lerp(FilterDirectionalShadow(positionSTS), shadow, global.cascadeBlend);
+        shadow = lerp(SampleDirectionalShadowFiltered(positionSTS, directional.tileIndex + 1, pcssSinCos, mainLight, slope), shadow, global.cascadeBlend);
     }
     return shadow;
 }
@@ -260,13 +490,13 @@ float SampleOtherShadowAtlas (float3 positionSTS, float3 bounds) {
 }
 
 float FilterOtherShadow (float3 positionSTS, float3 bounds) {
-    #if defined(OTHER_FILTER_SETUP)
-        real weights[OTHER_FILTER_SAMPLES];
-        real2 positions[OTHER_FILTER_SAMPLES];
+    #if defined(SHADOW_FILTER_SETUP)
+        real weights[SHADOW_FILTER_SAMPLES];
+        real2 positions[SHADOW_FILTER_SAMPLES];
         float4 size = _OtherShadowAtlasSize.yyxx;//other是正方形图集，x=边长,y=1/边长，yyxx→(1/s,1/s,s,s)
-        OTHER_FILTER_SETUP(size, positionSTS.xy, weights, positions);
+        SHADOW_FILTER_SETUP(size, positionSTS.xy, weights, positions);
         float shadow = 0;
-        for (int i = 0; i < OTHER_FILTER_SAMPLES; i++) {
+        for (int i = 0; i < SHADOW_FILTER_SAMPLES; i++) {
             shadow += weights[i] * SampleOtherShadowAtlas(float3(positions[i].xy, positionSTS.z), bounds);  
         }
         return shadow;

@@ -113,7 +113,9 @@ float4 DeferredLightPassFragment(Varyings input) : SV_Target
         surface.occlusion = GT3.z;
         
         //surface.fresnelStrength = 1;
-        surface.dither = InterleavedGradientNoise(uv, 0);
+        //必须传“像素坐标”！uv 是 0~1 的屏幕 UV，用它当 IGN 的输入高频噪点会退化成一条低频渐变
+        //（整个屏幕只绕约 4 圈），dither 混合就近似硬切；改用 SV_Position，语义与 forward 的 config.fragment.positionSS 一致
+        surface.dither = InterleavedGradientNoise(input.positionCS_SS.xy, 0);
         surface.renderingLayerMask = asuint(unity_RenderingLayer.x);
     
         BRDF brdf = GetBRDF(surface, false);

@@ -19,6 +19,74 @@ public class Shadows
 		shadowDistanceFadeId = Shader.PropertyToID("_ShadowDistanceFade"),//同时包括最大距离和fade衰减
 		shadowPancakingId = Shader.PropertyToID("_ShadowPancaking");//定向光正交投影用panCaking，而其他的用透视投影的不能用panCaking，否则会变形出错
 
+	//PCSS（只对主定向光）用到的全局
+	static int pcssSearchRadiusId = Shader.PropertyToID("_DirectionalPCSSSearchRadius"),
+		pcssPenumbraRefId = Shader.PropertyToID("_DirectionalPCSSPenumbraRef"),
+		pcssPenumbraMaxWorldId = Shader.PropertyToID("_DirectionalPCSSPenumbraMaxWorld"),
+		pcssBlockerSamplesId = Shader.PropertyToID("_DirectionalPCSSBlockerSamples"),
+		pcssSamplesId = Shader.PropertyToID("_DirectionalPCSSSamples"),
+		pcssPenumbraPowId = Shader.PropertyToID("_DirectionalPCSSPenumbraPow"),
+		pcssPaddingId = Shader.PropertyToID("_DirectionalPCSSPadding"),
+		pcssSlopeBiasId = Shader.PropertyToID("_DirectionalPCSSSlopeBias"),
+		pcssNormalBiasId = Shader.PropertyToID("_DirectionalPCSSNormalBias"),
+		pcssLightDirId = Shader.PropertyToID("_DirectionalPCSSLightDir");
+
+	//主光方向(指向光源)，PCSS 用它算斜率，在渲染定向光阴影时刷新
+	Vector3 pcssLightDir;
+
+	//最细级联(cascade0)的球半径与纹素世界尺寸（每帧在 RefreshPCSSRadiusMetrics 里算）。
+	//"最细级联的 1 个纹素有多大"是把两个锚点换算成世界长度的唯一尺子：
+	//级联相关的量只允许出现在这一步换算里，半径/半影本身必须是世界量（否则同一块几何在粗细级联会差上百倍）
+	float pcssSphereR0;
+	float pcssTexelWorld0;
+
+	//搜索半径锚点（最细级联的纹素个数）的默认值：设置里 ≤0 时用这个
+	const int pcssSearchTexelsDefault = 20;
+	//半影上限锚点（最细级联的纹素个数）的默认值：设置里 ≤0 时用这个
+	const int pcssFilterTexelsDefault = 20;
+
+	//把两个"纹素锚点"换算成 shader 真正用的世界长度（换算后与级联、分辨率都无关）：
+	//- 搜索半径：锚定最细级联(cascade0)的 N 个纹素(默认20)。shader 里还会保证每个级联至少能搜到自己 1 个纹素。
+	float PCSSSearchRadiusWorld =>
+		Mathf.Max(1, settings.directional.pcss.searchTexels > 0 ?
+			settings.directional.pcss.searchTexels : pcssSearchTexelsDefault) * pcssTexelWorld0;
+
+	//半影上限：把"最细级联的 N 个纹素"换算成一个**恒定世界长度**(与级联无关)。
+	//级联相关的量只留在 shader 的 worldToUV 换算里；一旦让半影本身带上级联的量(比如"本級联的 N 纹素")，
+	//世界半影就会逐级联翻倍 → 看起来"越远越糊 / 越近越糊"。
+	float PCSSPenumbraMaxWorld =>
+		Mathf.Clamp(settings.directional.pcss.filterTexels > 0 ?
+			settings.directional.pcss.filterTexels : pcssFilterTexelsDefault, 2, 256) * pcssTexelWorld0;
+
+	//深度差归一化的参考长度(世界)：用最细级联球半径当场景尺度参考。
+	//同一块几何在世界里产生同一个深度差 → 除以这个常量 → 各级联得到同一个比值（半影才不会随级联突变）
+	float PCSSPenumbraRefWorld => pcssSphereR0;
+
+	//算最细级联的球半径与"1 纹素的世界尺寸"（必须在所有 SetCascadeData 之前算完）
+	void RefreshPCSSRadiusMetrics()
+	{
+		pcssSphereR0 = 0f;
+		pcssTexelWorld0 = 0f;
+		if (!settings.directional.pcss.enabled || camera == null)
+		{
+			return;
+		}
+
+		//与 ComputeDirectionalShadowMatricesAndCullingSphere 用同一套相机视锥数据（几何口径一致）
+		float near = camera.nearClipPlane;
+		Matrix4x4 I_VP = (camera.projectionMatrix * camera.worldToCameraMatrix).inverse;
+		Vector3 nearBL = I_VP.MultiplyPoint(new Vector3(-1f, -1f, -1f));
+		Vector3 nearTR = I_VP.MultiplyPoint(new Vector3(1f, 1f, -1f));
+		Vector3 camCenter = camera.transform.position;
+
+		ComputeCascadeSphereGeometry(camera, settings, 0, near, camCenter,
+			nearBL - camCenter, nearTR - camCenter,
+			out Vector3 sphereCenter, out float sphereR);
+
+		pcssSphereR0 = sphereR;
+		pcssTexelWorld0 = 2f * sphereR / (float)settings.directional.tileSize;
+	}
+
 	private static int otherShadowAtlasId = Shader.PropertyToID("_OtherShadowAtlas"),
 		otherShadowMatricesId = Shader.PropertyToID("_OtherShadowMatrices"),
 		otherShadowTilesId = Shader.PropertyToID("_OtherShadowTiles"),
@@ -248,6 +316,8 @@ public class Shadows
 	///渲染阴影
 	public void Render()
 	{
+		//必须先于所有 SetCascadeData：PCSS 两个半径都要用这里算出来的值
+		RefreshPCSSRadiusMetrics();
 		if (ShadowedDirectionalLightCount > 0)
 		{
 			RenderDirectionalShadows();
@@ -276,6 +346,25 @@ public class Shadows
 		buffer.SetGlobalVector(shadowDistanceFadeId, new Vector4(1f / settings.maxDistance, 1f / settings.distanceFade, 1f / (1f - f * f)));
 		buffer.SetGlobalVector(shadowAtlasSizeId, atlasSizes);
 		buffer.SetGlobalVector(otherShadowAtlasSizeId, atlasSizesOther);
+
+		//PCSS：有带阴影的定向光且开关打开时才启用（shader里只对主定向光生效）
+		SetKeywords(pcssKeywords, settings.directional.pcss.enabled && ShadowedDirectionalLightCount > 0 ? 0 : -1);
+		//PCF 档位（定向光与其他光共用一套关键字）：放在这里而不是 RenderDirectionalShadows / RenderOtherShadows 里，
+		//因为那两个函数各自可能因"没有带阴影的定向光"/"没有其他光源"而不执行，关键字会残留上一帧的值
+		SetKeywords(shadowFilterKeywords, (int)settings.filter - 1);
+		//搜索半径：锚定"最细级联的 N 个纹素"，自动随分辨率/级联比例变化
+		//(每个级联还有"至少搜到自己2个纹素"的下限，写在 shader 里)
+		buffer.SetGlobalFloat(pcssSearchRadiusId, PCSSSearchRadiusWorld);
+		//半影上限：世界长度（与级联无关，级联量只在 shader 里参与换算）；参考长度用于把世界深度差归一化
+		buffer.SetGlobalFloat(pcssPenumbraMaxWorldId, PCSSPenumbraMaxWorld);
+		buffer.SetGlobalFloat(pcssPenumbraRefId, PCSSPenumbraRefWorld);
+		buffer.SetGlobalInt(pcssBlockerSamplesId, settings.directional.pcss.blockerSamples);
+		buffer.SetGlobalInt(pcssSamplesId, settings.directional.pcss.samples);
+		buffer.SetGlobalFloat(pcssPenumbraPowId, settings.directional.pcss.penumbraPow);
+		buffer.SetGlobalFloat(pcssPaddingId, settings.directional.pcss.padding);
+		buffer.SetGlobalFloat(pcssSlopeBiasId, settings.directional.pcss.slopeBias);
+		buffer.SetGlobalFloat(pcssNormalBiasId, settings.directional.pcss.normalBias);
+		buffer.SetGlobalVector(pcssLightDirId, new Vector4(pcssLightDir.x, pcssLightDir.y, pcssLightDir.z, 0f));
 		buffer.EndSample(bufferName);
 		ExecuteBuffer();
 	}
@@ -339,7 +428,6 @@ public class Shadows
 		//buffer.SetGlobalFloat(shadowDistanceId, settings.maxDistance);
 		//float f = 1f - settings.directional.cascadeFade;//实现级联阴影最外层与外边的平滑过渡（类似最大距离的fade），这个用平方衰减
 		//buffer.SetGlobalVector(shadowDistanceFadeId, new Vector4(1f / settings.maxDistance, 1f / settings.distanceFade, 1f/(1f - f * f)));//用除法，这样shader里就能用乘法，快一点
-		SetKeywords(directionalFilterKeywords, (int)settings.directional.filter - 1);
 		SetKeywords(cascadeBlendKeywords, (int)settings.directional.cascadeBlend - 1);
 		//buffer.SetGlobalVector(shadowAtlasSizeId, new Vector4(atlasSize, 1f / atlasSize));
 		buffer.EndSample(bufferName);
@@ -397,7 +485,13 @@ public class Shadows
 			if (index == 0)
 			{
 				//只对第0个光源执行 SetCascadeData（因为所有光的级联裁剪球是等效的）
-				SetCascadeData(i, cullingSphere, tileSize);
+				//depthRange = 2*backDistance（与 shader 里正交投影的 far-near 一致），PCSS 用它把归一化深度换算成世界距离
+				float depthRange = cullingSphere.w * light.nearPlaneOffset * 20f;
+				SetCascadeData(i, cullingSphere, tileSize, depthRange);
+				if (i == 0)
+				{
+					pcssLightDir = -unityLight.transform.forward;//指向光源
+				}
 			}
 			int tileIndex = tileOffset + i;//同一个灯的每个级联的位置
 			dirShadowMatrices[tileIndex] = ConvertToAtlasMatrix(projectionMatrix * viewMatrix, //从世界空间到光源投影空间的转换矩阵
@@ -548,29 +642,39 @@ public class Shadows
 	}
 
 	//同时在处理某一个级联的cascadeData和cascadeCullingSpheres（每个灯相同）
-	void SetCascadeData(int index, Vector4 cullingSphere, float tileSize)
+	void SetCascadeData(int index, Vector4 cullingSphere, float tileSize, float depthRange)
 	{
+		float orthoWidth = 2f * cullingSphere.w;//该级联tile的正交投影世界宽度(PCSS用)，必须在缩小半径之前取
 		float texelSize = 2f * cullingSphere.w / tileSize;//级联裁剪球的半径*2，就是它的外接正方形的边长，再除以tile大小，就是shadow map每个像素对应的世界空间长度
-		float filterSize = texelSize * ((float)settings.directional.filter + 1f);//增大pcf半径让阴影更平滑，但会导致shadow acne再次出现，所以要增大法线偏差，匹配滤波器的大小
-		cullingSphere.w -= filterSize;//pcf增大，增加采样区域，意味着采样点可能在级联剔除球外，那么先减一下，到pcf往外采样的时候就不会超出球外了
+		float filterSize = texelSize * ((float)settings.filter + 1f);//增大pcf半径让阴影更平滑，但会导致shadow acne再次出现，所以要增大法线偏差，匹配滤波器的大小
+		//剔除球的安全余量：只按 PCF 滤波核（几个纹素）收缩，**不能用 PCSS 的搜索半径**。
+		//原因：级联球彼此并不嵌套，相邻球在切片分界处与视锥侧边恰好相切（侧向余量=0），
+		//一旦按世界单位(米级)收缩半径，就会露出一圈"不被任何级联球覆盖"的环带 → GetShadowData 走到
+		//i == _CascadeCount → strength = 0 → 该处阴影整块消失。PCSS 的核越界由 shader 端的
+		//uvClampMin/uvClampMax + maxKernelUV 自己夹在本 tile 内。
+		float cullMargin = filterSize;
+		//夹到0再平方：负数平方会变成正数，会让该级联把球心附近的片元错误地全部选中
+		cullingSphere.w = Mathf.Max(cullingSphere.w - cullMargin, 0f);
 		cullingSphere.w *= cullingSphere.w;
 		cascadeCullingSpheres[index] = cullingSphere;
 		cascadeData[index] = new Vector4(
 			1f / cullingSphere.w, //省除法，存1/半径²，因为shader里distanceSqr是距离平方
-			filterSize * 1.4142136f);//采样阴影的时候，尝试把表面沿法线向外偏移一定长度，这样能避免自阴影，这个长度就是texelSize，考虑正方形纹素，偏移最多乘根号二
+			filterSize * 1.4142136f, //采样阴影的时候，尝试把表面沿法线向外偏移一定长度，这样能避免自阴影，这个长度就是texelSize，考虑正方形纹素，偏移最多乘根号二
+			orthoWidth, depthRange);//z=tile正交世界宽度、w=光相机深度范围(far-near)，供PCSS换算世界距离
 	}
 
-	//控制滤波模式的shader keyword
-	private static string[] directionalFilterKeywords =
+	//控制滤波模式的shader keyword：定向光与其他光共用同一套（合并后该组变体 5×4 → 4）
+	//档位取 ShadowSettings.filter（已提到顶层统一控制）
+	private static string[] shadowFilterKeywords =
 	{
-		"_DIRECTIONAL_PCF3",
-		"_DIRECTIONAL_PCF5",
-		"_DIRECTIONAL_PCF7",
+		"_SHADOW_PCF3",
+		"_SHADOW_PCF5",
+		"_SHADOW_PCF7",
 	};
 
 	void SetKeywords(string[] keywords, int enabledIndex)
 	{
-		//int enabledIndex = (int)settings.directional.filter - 1;//因为对应的PCF3x3是1，PCF5x5是2，PCF7x7是3，所以-1就是012
+		//int enabledIndex = (int)settings.filter - 1;//因为对应的PCF3x3是1，PCF5x5是2，PCF7x7是3，所以-1就是012
 		for (int i = 0; i < keywords.Length; i++)//在012循环
 		{
 			if (i == enabledIndex)
@@ -589,6 +693,9 @@ public class Shadows
 		"_CASCADE_BLEND_SOFT",
 		"_CASCADE_BLEND_DITHER"
 	};
+
+	//PCSS 开关关键字（shader里只对主定向光生效）
+	static string[] pcssKeywords = { "_DIRECTIONAL_PCSS" };
 	
 	
 	
@@ -601,13 +708,6 @@ public class Shadows
 
 	//是否使用阴影遮罩	每帧重新评估该字段
 	private bool useShadowMask;
-
-	static string[] otherFilterKeywords =
-	{
-		"_OTHER_PCF3",
-		"_OTHER_PCF5",
-		"_OTHER_PCF7",
-	};
 
 	///渲染所有点光源、定向光阴影
 	private void RenderOtherShadows()
@@ -643,7 +743,6 @@ public class Shadows
 		
 		buffer.SetGlobalMatrixArray(otherShadowMatricesId, otherShadowMatrices);
 		buffer.SetGlobalVectorArray(otherShadowTilesId, otherShadowTiles);
-		SetKeywords(otherFilterKeywords, (int)settings.other.filter - 1);
 		buffer.EndSample(bufferName);
 		ExecuteBuffer();
 	}
@@ -666,7 +765,7 @@ public class Shadows
 
 		//透视投影的灯光，要额外算
 		float texelSize = 2f / (tileSize * projectionMatrix.m00); //透视矩阵m00存的是：1 / tan(半角)。距离1处世界空间宽度 = tan(halfAngle) * 2，除 tileSize = 单个纹素宽度
-		float filterSize = texelSize * ((float)settings.other.filter + 1f);//匹配对应pcf半径的filter大小
+		float filterSize = texelSize * ((float)settings.filter + 1f);//匹配对应pcf半径的filter大小
 		float bias = light.normalBias * filterSize * 1.4142136f;
 
 		Vector2 offset = SetTileViewport(index, split, tileSize);
@@ -709,7 +808,7 @@ public class Shadows
 		};
 
 		float texelSize = 2f / (tileSize); //因为立方体贴图，视场角固定是90度，距离1处的世界空间平铺尺寸始终是2
-		float filterSize = texelSize * ((float)settings.other.filter + 1f);
+		float filterSize = texelSize * ((float)settings.filter + 1f);
 		float bias = light.normalBias * filterSize * 1.4142136f;
 		float tileScale = 1f / split;
 		//↑，以上4行，对六个面都一样，省的多算5次
