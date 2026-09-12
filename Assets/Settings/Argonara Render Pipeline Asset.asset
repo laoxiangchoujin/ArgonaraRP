@@ -46,8 +46,8 @@ MonoBehaviour:
       pcss:
         enabled: 1
         screenSpaceBlur: 1
-        searchTexels: 8
-        filterTexels: 16
+        searchTexels: 10
+        filterTexels: 20
         blockerSamples: 32
         samples: 32
         penumbraPow: 1

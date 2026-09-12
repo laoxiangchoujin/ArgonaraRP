@@ -144,11 +144,20 @@ public partial class CameraRendererForward : CameraRendererBase
     //告诉shader"当前是前向还是延迟"（1=延迟、0=前向）：用于区分"用途相同但名字不同"的纹理
     static int useDeferredRendererId = Shader.PropertyToID("_UseDeferredRenderer");
 
-    //屏幕空间阴影图（第3步）及其blur临时图：半分辨率、R8（和延迟那边同名同义，shader 才能共用）
+    //屏幕空间阴影（第3步）的**两对**图：结果图+倒手图半分辨率、半影mask+倒手图1/4分辨率；都是R8
+    //（和延迟那边同名同义，shader 才能共用）
     static int screenSpaceShadowTexId = Shader.PropertyToID("_ScreenSpaceShadowTex");
+    //结果图的blur倒手图：同一张纹理不能在同一次绘制里既读又写，所以横/竖两趟之间来回倒一次（半分辨率）
     static int screenSpaceShadowTexTempBlurId = Shader.PropertyToID("_ScreenSpaceShadowTex_TempBlur");
-    //这张图自己的纹素尺寸（xy = 1/宽、1/高）：blur取邻居要用它
+    //半影mask（akg/原神那套）：1/4分辨率、一个纹素对应4×4个屏幕像素，只标记"阴影/半影/非阴影"三态。
+    //有了它，PCSS就只在半影带里跑（其余像素直接返回0或1），mask自己那两趟blur也从"给PCSS去噪"变成"扩宽半影带"
+    static int screenSpaceShadowMaskTexId = Shader.PropertyToID("_ScreenSpaceShadowMaskTex");
+    //mask自己的blur倒手图：1/4分辨率（和结果图的倒手图不是一套尺寸，不能共用）
+    static int screenSpaceShadowMaskTexTempId = Shader.PropertyToID("_ScreenSpaceShadowMaskTexTemp");
+    //【mask那一对】的纹素尺寸（xy = 1/宽、1/高）：mask blur取邻居用它，mask那趟还靠它反推"1个屏幕像素"
     static int screenSpaceShadowTexelSizeId = Shader.PropertyToID("_ScreenSpaceShadowTexelSize");
+    //【结果图那一对】的纹素尺寸：结果图那两趟双边blur取邻居用它（结果图是半分辨率，和mask不是一套尺寸）
+    static int screenSpaceShadowResultTexelSizeId = Shader.PropertyToID("_ScreenSpaceShadowResultTexelSize");
     //本帧是否走屏幕空间阴影：在 Setup 里按设置定下，Cleanup 用同一个值配对释放
     bool useScreenSpaceShadow;
     //告诉光照shader"这之后画的物体采样屏幕空间阴影图"（和延迟那边同名同义）
@@ -215,7 +224,7 @@ public partial class CameraRendererForward : CameraRendererBase
         ExecuteBuffer();
     }
 
-    //屏幕空间阴影（第3步）的两张半分辨率图：开关关掉就什么都不创建
+    //屏幕空间阴影（第3步）的**两对**图：结果图+倒手图半分辨率、半影mask+倒手图1/4分辨率；开关关掉就什么都不创建
     void AllocateScreenSpaceShadowTextures()
     {
         if (!useScreenSpaceShadow)
@@ -223,17 +232,31 @@ public partial class CameraRendererForward : CameraRendererBase
             return;
         }
 
-        //半分辨率：像素数变1/4（PCSS采样和两趟blur都省4倍），同样抽头覆盖范围翻倍（更平滑）
+        //结果图 + 它的倒手图：半分辨率（PCSS采样和blur都省4倍），同样抽头覆盖范围翻倍（更平滑）
         int width = Mathf.Max(1, bufferSize.x / 2), height = Mathf.Max(1, bufferSize.y / 2);
         buffer.GetTemporaryRT(screenSpaceShadowTexId, width, height, 0, FilterMode.Point,
             RenderTextureFormat.R8, RenderTextureReadWrite.Linear);
         buffer.GetTemporaryRT(screenSpaceShadowTexTempBlurId, width, height, 0, FilterMode.Point,
             RenderTextureFormat.R8, RenderTextureReadWrite.Linear);
-        //blur要按这张图自己的纹素尺寸取邻居（半分辨率时 = 屏幕纹素的2倍）
-        buffer.SetGlobalVector(screenSpaceShadowTexelSizeId, new Vector4(1f / width, 1f / height, width, height));
+
+        //半影mask + 它的倒手图：1/4分辨率 —— 一个mask纹素对应4×4个屏幕像素（akg/原神的做法）
+        //向上取整：整除会把画面最右/最下一列像素丢掉
+        int maskWidth = Mathf.Max(1, (bufferSize.x + 3) / 4), maskHeight = Mathf.Max(1, (bufferSize.y + 3) / 4);
+        buffer.GetTemporaryRT(screenSpaceShadowMaskTexId, maskWidth, maskHeight, 0, FilterMode.Point,
+            RenderTextureFormat.R8, RenderTextureReadWrite.Linear);
+        buffer.GetTemporaryRT(screenSpaceShadowMaskTexTempId, maskWidth, maskHeight, 0, FilterMode.Point,
+            RenderTextureFormat.R8, RenderTextureReadWrite.Linear);
+
+        //两套纹素尺寸分别上传：mask的blur用mask那套（mask那趟还靠它反推"1个屏幕像素"的uv长度 × 0.25），
+        //结果图的双边blur用结果图那套（它读的是半分辨率的结果图，不能被mask的尺寸带偏）
+        buffer.SetGlobalVector(screenSpaceShadowTexelSizeId,
+            new Vector4(1f / maskWidth, 1f / maskHeight, maskWidth, maskHeight));
+        buffer.SetGlobalVector(screenSpaceShadowResultTexelSizeId,
+            new Vector4(1f / width, 1f / height, width, height));
     }
 
-    //屏幕空间阴影（第3步）：① 深度法线prepass ② 把深度拷成可读纹理 ③ 生成 + 横/竖两趟blur
+    //屏幕空间阴影（第3步）：① 深度法线prepass ② 把深度拷成可读纹理
+    //③ 半影mask → 横/竖两趟blur扩宽 → PCSS只在半影带里真算（akg那套）
     //必须在opaque之前调用（opaque的光照要采样这张图），且此时离屏阴影已经画好了。
     void DrawScreenSpaceShadowGeometry(bool useDynamicBatching, bool useGPUInsancing, int renderingLayerMask)
     {
@@ -279,15 +302,40 @@ public partial class CameraRendererForward : CameraRendererBase
         buffer.SetGlobalTexture(depthTextureId, depthTextureId);
         ExecuteBuffer();
 
-        //③ 三趟：生成 → 横向blur → 纵向blur（和延迟那边一模一样）
-        //   帧调试器分组：整个"屏幕空间阴影（生成+两趟blur）"一个组
+        //③ 四趟（akg那套：先分区，只在半影带里跑PCSS）：半影mask → 横blur → 竖blur → PCSS
+        //   帧调试器分组：整个"屏幕空间阴影"一个组
         buffer.name = "Screen Space Shadow";
         buffer.BeginSample("Screen Space Shadow");
+
+        //半影mask：1/4分辨率。本地半影够粗的位置写 0.5（=交给PCSS），否则直接二值(0/1) → _ScreenSpaceShadowMaskTex
+        buffer.SetRenderTarget(screenSpaceShadowMaskTexId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
+        buffer.DrawProcedural(Matrix4x4.identity, screenSpaceShadowMaterial,
+            (int)ScreenSpaceShadowPass.PenumbraMask, MeshTopology.Triangles, 3);
+        buffer.SetGlobalTexture(screenSpaceShadowMaskTexId, screenSpaceShadowMaskTexId);//给下一趟采样
+
+        //横向blur mask（箱式7抽头）：mask → _ScreenSpaceShadowMaskTexTemp
+        buffer.SetRenderTarget(screenSpaceShadowMaskTexTempId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
+        buffer.DrawProcedural(Matrix4x4.identity, screenSpaceShadowMaterial,
+            (int)ScreenSpaceShadowPass.MaskBlurHorizontal, MeshTopology.Triangles, 3);
+        buffer.SetGlobalTexture(screenSpaceShadowMaskTexTempId, screenSpaceShadowMaskTexTempId);//给下一趟采样
+
+        //纵向blur mask：_ScreenSpaceShadowMaskTexTemp → mask（转一圈回来，把半影带扩宽）
+        buffer.SetRenderTarget(screenSpaceShadowMaskTexId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
+        buffer.DrawProcedural(Matrix4x4.identity, screenSpaceShadowMaterial,
+            (int)ScreenSpaceShadowPass.MaskBlurVertical, MeshTopology.Triangles, 3);
+        buffer.SetGlobalTexture(screenSpaceShadowMaskTexId, screenSpaceShadowMaskTexId);//给PCSS那趟查"半影带"
+
+        //PCSS：只在半影带里真算（其余像素在shader里直接返回0/1）→ _ScreenSpaceShadowTex
         buffer.SetRenderTarget(screenSpaceShadowTexId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
         buffer.DrawProcedural(Matrix4x4.identity, screenSpaceShadowMaterial,
             (int)ScreenSpaceShadowPass.PCSS, MeshTopology.Triangles, 3);
-        buffer.SetGlobalTexture(screenSpaceShadowTexId, screenSpaceShadowTexId);//给下一趟采样
+        buffer.SetGlobalTexture(screenSpaceShadowTexId, screenSpaceShadowTexId);//给下面两趟blur采样
 
+        //横向blur结果图（双边保边滤波）：_ScreenSpaceShadowTex → _ScreenSpaceShadowTex_TempBlur
+        //纵向blur结果图：_ScreenSpaceShadowTex_TempBlur → _ScreenSpaceShadowTex
+        //为什么还得有这两趟：PCSS在带子里用的是"每2×2屏幕像素换一个旋转角"的泊松盘，结果图是**带噪**的，
+        //而mask那两趟blur只管mask、管不到结果图 ⇒ 结果图仍然需要一次"跨物体边界不糊"的去噪。
+        //（想省这两趟的话，得先解决带子里的噪声来源，别直接删）
         buffer.SetRenderTarget(screenSpaceShadowTexTempBlurId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
         buffer.DrawProcedural(Matrix4x4.identity, screenSpaceShadowMaterial,
             (int)ScreenSpaceShadowPass.BlurHorizontal, MeshTopology.Triangles, 3);
@@ -423,11 +471,13 @@ public partial class CameraRendererForward : CameraRendererBase
         //prepass的法线图是"始终创建"的，所以无条件释放
         buffer.ReleaseTemporaryRT(normalsTextureId);
 
-        //屏幕空间阴影的两张图：只有本帧真的创建过才释放
+        //屏幕空间阴影的两对图：只有本帧真的创建过才释放
         if (useScreenSpaceShadow)
         {
             buffer.ReleaseTemporaryRT(screenSpaceShadowTexId);
             buffer.ReleaseTemporaryRT(screenSpaceShadowTexTempBlurId);
+            buffer.ReleaseTemporaryRT(screenSpaceShadowMaskTexId);
+            buffer.ReleaseTemporaryRT(screenSpaceShadowMaskTexTempId);
         }
     }
 
@@ -481,7 +531,12 @@ public partial class CameraRendererForward : CameraRendererBase
     {
         PCSS,
         BlurHorizontal,
-        BlurVertical
+        BlurVertical,
+        //下面三个是"半影mask"那套：它们在 shader 里是追加在**文件末尾**的，
+        //所以索引正好接在后面（不要把它们插到上面去，否则前三项的索引会全错位）
+        PenumbraMask,
+        MaskBlurHorizontal,
+        MaskBlurVertical
     }
 
     Texture2D missingTexture;//因为深度纹理是可选的，所以需要一个缺失的纹理，来避免没有深度纹理时的错误

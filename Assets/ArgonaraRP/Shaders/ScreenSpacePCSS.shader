@@ -1,13 +1,19 @@
 //第3步：屏幕空间 PCSS 阴影图
 //把"逐像素几十次采样的 PCSS"从 Deferred Lighting 里挪出来，单独算一遍写成一张屏幕纹理，
-//再用两趟 blur 去噪，最后光照 Pass 只采样一次这张纹理（还能顺带做半分辨率）。
+//最后光照 Pass 只采样一次这张纹理（还能顺带做半分辨率）。
 //
 //绘制顺序（都在 GBuffer 之后、Deferred Lighting 之前）：
-//  GBuffer → 【本shader pass0 PCSS】→ 【pass1 横 blur】→ 【pass2 竖 blur】→ Deferred Lighting
-//纹理：_ScreenSpaceShadowTex 存结果，_ScreenSpaceShadowTex_TempBlur 用来横竖两趟之间倒手
-//（同一张纹理不能在同一次绘制里既读又写）。
+//  GBuffer
+//   → ① 半影mask（1/4分辨率，判定"阴影/半影/非阴影"）
+//   → ②③ mask横/竖两趟箱式blur（把半影带扩宽）
+//   → ④ PCSS（查mask：0/1直接返回，只有半影带里才真跑）
+//   → ⑤⑥ 结果图横/竖两趟双边blur（给带子里的PCSS噪声去噪）
+//   → Deferred Lighting
+//半分辨率纹理对：_ScreenSpaceShadowTex（结果）、_ScreenSpaceShadowTex_TempBlur（⑤⑥之间倒手）
+//1/4分辨率纹理对：_ScreenSpaceShadowMaskTex（mask）、_ScreenSpaceShadowMaskTexTemp（②③之间倒手）
+//（同一张纹理不能在同一次绘制里既读又写，所以blur都要有倒手图）。
 //
-//三个 Pass 都是由 CommandBuffer.DrawProcedural 手动绘制的（和 CameraRenderer.shader 一样），
+//这些 Pass 都是由 CommandBuffer.DrawProcedural 手动绘制的（和 CameraRenderer.shader 一样），
 //所以只需要 Name（靠材质 + pass索引来调用），不需要 LightMode 之类的 tag：
 //  - 不参与 Unity 的渲染队列 / 灯光模式匹配 → 不需要 "LightMode"
 //  - 本管线现有 shader 都没有 "RenderPipeline" tag，加了反而可能被跳过 → 也不加
@@ -31,9 +37,29 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
         //这样跨物体边界、跨不同朝向的面时不会把阴影糊过去（否则会漏光、出现亮边、近遮挡处被糊软）。
         //=========================================================
 
-        //屏幕空间阴影图自己的纹素尺寸：xy = 1/宽、1/高（zw = 宽、高），由 C# 按这张图的实际尺寸上传。
-        //图是半分辨率的 ⇒ 它 = 屏幕纹素的2倍，所以blur取邻居必须用它，不能用 _CameraBufferSize
+        //【mask那一对的纹素尺寸】xy = 1/宽、1/高（zw = 宽、高）。C# 按 mask（1/4分辨率）的尺寸上传。
+        //1个mask纹素 = 4个屏幕纹素；反过来也能从它推出"1个屏幕像素"的uv长度 = 它 × 0.25（mask那趟找4×4子像素要用）
         float4 _ScreenSpaceShadowTexelSize;
+        //【结果图那一对的纹素尺寸】给下面两趟双边blur用（结果图是半分辨率，和mask不是同一套尺寸）
+        float4 _ScreenSpaceShadowResultTexelSize;
+
+        //半影mask：1/4分辨率，0 = 全遮、1 = 全亮、中间 = 半影（akg/原神那套）。由 C# 每帧 SetGlobalTexture 绑定
+        TEXTURE2D(_ScreenSpaceShadowMaskTex);
+
+        //mask 的判据阈值 MASK_BAND_MIN_TEXELS 定义在 Shadows.hlsl 里（共享库，那边才能被看到）
+
+        //mask blur 的调参（想接成管线设置以后再说）：
+        //带子宽度**不再**由它决定（判据直接按本地半影算），这里负责"抹平带子边界的1/4分辨率块状感 +
+        //给带子外圈留一条保守余量"。akg 原文就是 ±3。
+        //调大 = 带子边界更平滑、PCSS覆盖面更宽（更贵）；调小 = 更省，但边界会更"硬"、颗粒感更明显。
+        #define MASK_BLUR_RADIUS 3        //±3 = 7抽头（横竖两趟合起来 7×7）
+        //距离补偿（akg那个"越近半径越大"的系数）：**默认关**，先保证正确性。
+        //原因：radius 乘的是"抽头间距"，间距一大就变成稀疏采样 —— 7个抽头撒在几百个屏幕像素上，
+        //mask会被拉出条纹/斑块（表现就是阴影变形、拉伸，镜头离得越近越明显）。要试就打开，并把MAX压在2以内。
+        #define MASK_BLUR_DISTANCE_COMPENSATION 0
+        #define MASK_BLUR_FALLOFF 0.01    //距离系数 = 1/(d²·falloff + falloff)
+        #define MASK_BLUR_RADIUS_MIN 1.0  //下限1 = 普通箱式（抽头间距 = 1个mask纹素）
+        #define MASK_BLUR_RADIUS_MAX 2.0  //上限别放大：抽头间距=2个mask纹素已经在稀疏采样的边缘了
 
         //屏幕UV + 原始深度 → 世界坐标（和 DeferredLightPassFragment 那套翻转保持一致）
         float3 ScreenSpaceBlurWorldPos (float2 uv, float rawDepth)
@@ -119,6 +145,20 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
                     return 1.0;
                 }
 
+                //半影mask（akg/原神那套）：0 = 必然全遮、1 = 必然全亮，只有中间的"半影带"才值得跑PCSS。
+                //mask是1/4分辨率、而且被箱式模糊**故意扩宽**过，所以这里用linear采样（带子平滑），
+                //阈值留一点余量：报错方向永远是"多算一点PCSS"，而不是"该软的地方变硬"。
+                //（省下的不止是blocker+PCF：下面重建世界坐标、造Surface、选级联也一并跳过了）
+                float penumbraMask = SAMPLE_TEXTURE2D(_ScreenSpaceShadowMaskTex, sampler_linear_clamp, uv).r;
+                if (penumbraMask >= 1.0 - 1e-3)
+                {
+                    return 1.0;
+                }
+                if (penumbraMask <= 1e-3)
+                {
+                    return 0.0;
+                }
+
                 //深度图重建世界坐标（抄 DeferredLightPassFragment）
                 float4 posClip = float4(uv * 2 - 1, rawDepth, 1);
                 #if UNITY_UV_STARTS_AT_TOP
@@ -183,7 +223,7 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
             {
                 float2 uv = input.screenUV;
                 //这张图自己的纹素尺寸（半分辨率 ⇒ 是屏幕纹素的2倍），横向取x
-                float texelX = _ScreenSpaceShadowTexelSize.x;
+                float texelX = _ScreenSpaceShadowResultTexelSize.x;
 
                 float rawDepthC = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
                 if (rawDepthC < 1e-5)
@@ -233,7 +273,7 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
             {
                 float2 uv = input.screenUV;
                 //这张图自己的纹素尺寸（半分辨率 ⇒ 是屏幕纹素的2倍），纵向取y
-                float texelY = _ScreenSpaceShadowTexelSize.y;
+                float texelY = _ScreenSpaceShadowResultTexelSize.y;
 
                 float rawDepthC = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
                 if (rawDepthC < 1e-5)
@@ -259,6 +299,174 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
                     weightSum += w;
                 }
                 return sum / max(weightSum, 1e-4);
+            }
+            ENDHLSL
+        }
+
+        //=========================================================
+        //====== 以下三趟是"半影mask"那套（akg/原神）：先分区域，只在半影带里跑PCSS ======
+        //为什么追加在文件末尾：C# 是按**索引**调用 pass 的（DrawProcedural 的 pass 号），
+        //插在上面三个 Pass 中间会让它们的索引全部错位；真正决定流程的是 C# 里的绘制顺序。
+        //=========================================================
+
+        //4.半影mask：1/4分辨率 —— 一个纹素对应4×4个屏幕像素。
+        //  判定三步（细节和理由见 Shadows.hlsl 的 EstimateShadowBandValue）：
+        //   ① 迷你 blocker search：一处遮挡都没有 ⇒ 直接 1（受光）
+        //   ② 估出"本地实际半影宽度"，细于阈值(MASK_BAND_MIN_TEXELS个mask纹素) ⇒ 直接二值
+        //   ③ 拿这个宽度当半径做"边界探测"：中心和邻居明暗全一致 ⇒ 不在半影里 ⇒ 直接二值
+        //      有不一致 ⇒ 边界就在一个半影宽度之内 ⇒ 写 0.5（交给PCSS）
+        //  0 = 全遮、1 = 全亮、0.5 = 半影带。
+        Pass
+        {
+            Name "Penumbra Mask"
+
+            HLSLPROGRAM
+            #pragma target 3.5
+            //这一趟不需要任何阴影关键字：它只做"采一次深度图 + 一次比较"，和滤波档位/PCSS开关无关
+
+            #pragma vertex DefaultPassVertex
+            #pragma fragment PenumbraMaskPassFragment
+
+            //一个mask纹素 → 0(全遮) / 1(全亮) / 0.5(半影带，交给PCSS)
+            float PenumbraMaskAt (float2 uv)
+            {
+                float rawDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
+
+                //先**无条件**重建世界坐标并算屏幕导数：ddx/ddy 是象限级的，
+                //要是有些lane提前return（天空），同一象限里其它lane的导数就会被带歪。
+                float4 posClip = float4(uv * 2 - 1, max(rawDepth, 1e-5), 1);
+                #if UNITY_UV_STARTS_AT_TOP
+                    posClip.y = -posClip.y;
+                #endif
+                float4 posWS = mul(UNITY_MATRIX_I_VP, posClip);
+                posWS /= posWS.w;
+                //一个mask纹素**在世界里**有多长（mask纹素 = 4个屏幕像素）→ 判据要用
+                float worldPerMaskTexel = max(length(ddx(posWS.xyz)), length(ddy(posWS.xyz)));
+
+                if (rawDepth < 0.00001 || GetDirectionalLightCount() == 0)
+                {
+                    return 1.0;//背景/没有实时光：算受光
+                }
+
+                Surface surfaceWS;
+                surfaceWS.position = posWS.xyz;
+                float3 normal = ScreenSpaceSceneNormal(uv);//延迟读GBuffer2，前向读_CameraNormalsTexture
+                surfaceWS.normal = normal;
+                surfaceWS.interpolatedNormal = normal;
+                surfaceWS.viewDirection = normalize(_WorldSpaceCameraPos - surfaceWS.position);
+                surfaceWS.depth = -TransformWorldToView(surfaceWS.position).z;
+                surfaceWS.dither = 0.0;//这一趟不做级联混合，抖动给0即可（行为确定）
+                surfaceWS.albedo = 0.0;
+                surfaceWS.alpha = 1.0;
+                surfaceWS.roughness = 0.0;
+                surfaceWS.metallic = 0.0;
+                surfaceWS.occlusion = 1.0;
+                surfaceWS.renderingLayerMask = 0;
+
+                ShadowData shadowData = GetShadowData(surfaceWS);
+                DirectionalShadowData directional = GetDirectionalShadowData(0, shadowData);//主光=第一个定向光
+                if (directional.strength * shadowData.strength <= 0.0)
+                {
+                    return 1.0;//实时阴影不可用（超出最后一个级联、或该光没有阴影强度）
+                }
+                return EstimateShadowBandValue(surfaceWS, shadowData, directional, worldPerMaskTexel);
+            }
+
+            float PenumbraMaskPassFragment (Varyings input) : SV_Target
+            {
+                return PenumbraMaskAt(input.screenUV);
+            }
+            ENDHLSL
+        }
+
+        //5.横向模糊mask：_ScreenSpaceShadowMaskTex → _ScreenSpaceShadowMaskTexTemp
+        //  ① 纯箱式平均，**不用双边**：这一趟的目的不是给噪声去噪，而是把半影带**故意扩宽**，
+        //    让带子比真实的半影更宽一点（宁宽勿窄：窄了就会出现"该软的地方是硬的"）。
+        //    双边权重恰恰会压住"跨物体边界"的混合，而阴影边界就在物体接触处 → 帮倒忙；
+        //    而且双边每个抽头要读深度+法线+重建世界坐标（3次采样），箱式只要1次。
+        //  ② 半径随距离放大（akg那个奇技淫巧）：mask是屏幕空间下采样的，物体离得越近、
+        //    它真实的半影在屏幕上越大，固定半径做不到 → 用 1/(d²·k+k) 的系数补偿。
+        Pass
+        {
+            Name "Mask Blur Horizontal"
+
+            HLSLPROGRAM
+            #pragma target 3.5
+
+            #pragma vertex DefaultPassVertex
+            #pragma fragment MaskBlurHorizontalPassFragment
+
+            float MaskBlurHorizontalPassFragment (Varyings input) : SV_Target
+            {
+                float2 uv = input.screenUV;
+                //mask自己的一个纹素（= 屏幕纹素的4倍）
+                float texelX = _ScreenSpaceShadowTexelSize.x;
+
+                //抽头间距（= radius 个mask纹素）。默认1 = 普通箱式；距离补偿默认关，见上面 define 的注释
+                float radius = 1.0;
+                #if MASK_BLUR_DISTANCE_COMPENSATION
+                float rawDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
+                if (rawDepth >= 1e-5)
+                {
+                    float3 posWS = ScreenSpaceBlurWorldPos(uv, rawDepth);
+                    float dis = distance(_WorldSpaceCameraPos.xyz, posWS);
+                    radius = 1.0 / (dis * dis * MASK_BLUR_FALLOFF + MASK_BLUR_FALLOFF);
+                }
+                radius = clamp(radius, MASK_BLUR_RADIUS_MIN, MASK_BLUR_RADIUS_MAX);
+                #endif
+
+                float sum = 0.0;
+                [unroll]
+                for (int i = -MASK_BLUR_RADIUS; i <= MASK_BLUR_RADIUS; i++)
+                {
+                    float2 uvN = uv + float2(i * texelX, 0.0) * radius;
+                    sum += SAMPLE_TEXTURE2D_LOD(_ScreenSpaceShadowMaskTex, sampler_linear_clamp, uvN, 0).r;
+                }
+                return sum / (2.0 * MASK_BLUR_RADIUS + 1.0);
+            }
+            ENDHLSL
+        }
+
+        //6.纵向模糊mask：_ScreenSpaceShadowMaskTexTemp → _ScreenSpaceShadowMaskTex
+        //  （和横向那趟完全对称，只是取y方向的邻居；两趟转一圈，结果仍在mask自己身上）
+        Pass
+        {
+            Name "Mask Blur Vertical"
+
+            HLSLPROGRAM
+            #pragma target 3.5
+
+            TEXTURE2D(_ScreenSpaceShadowMaskTexTemp);
+
+            #pragma vertex DefaultPassVertex
+            #pragma fragment MaskBlurVerticalPassFragment
+
+            float MaskBlurVerticalPassFragment (Varyings input) : SV_Target
+            {
+                float2 uv = input.screenUV;
+                float texelY = _ScreenSpaceShadowTexelSize.y;
+
+                //抽头间距（= radius 个mask纹素）。默认1 = 普通箱式；距离补偿默认关，见上面 define 的注释
+                float radius = 1.0;
+                #if MASK_BLUR_DISTANCE_COMPENSATION
+                float rawDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
+                if (rawDepth >= 1e-5)
+                {
+                    float3 posWS = ScreenSpaceBlurWorldPos(uv, rawDepth);
+                    float dis = distance(_WorldSpaceCameraPos.xyz, posWS);
+                    radius = 1.0 / (dis * dis * MASK_BLUR_FALLOFF + MASK_BLUR_FALLOFF);
+                }
+                radius = clamp(radius, MASK_BLUR_RADIUS_MIN, MASK_BLUR_RADIUS_MAX);
+                #endif
+
+                float sum = 0.0;
+                [unroll]
+                for (int i = -MASK_BLUR_RADIUS; i <= MASK_BLUR_RADIUS; i++)
+                {
+                    float2 uvN = uv + float2(0.0, i * texelY) * radius;
+                    sum += SAMPLE_TEXTURE2D_LOD(_ScreenSpaceShadowMaskTexTemp, sampler_linear_clamp, uvN, 0).r;
+                }
+                return sum / (2.0 * MASK_BLUR_RADIUS + 1.0);
             }
             ENDHLSL
         }

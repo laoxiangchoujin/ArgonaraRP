@@ -121,6 +121,14 @@ float FilterDirectionalShadow(float3 positionSTS)
 //=========================================================
 #define PCSS_MAX_SAMPLES 32
 
+//半影mask的判据阈值（单位：mask纹素个数）：本地半影要粗过它，才值得交给PCSS。
+//0.5 = 半影至少要 2 个屏幕像素粗（mask纹素 = 4 个屏幕像素）。
+//放在这里而不是 ScreenSpacePCSS.shader 里：Shadows.hlsl 是共享库（Terrain 等材质也会 include 它），
+//而 shader 的 HLSLINCLUDE 里"include 在 define 之前"，定在那边这个文件根本看不到。
+#ifndef MASK_BAND_MIN_TEXELS
+    #define MASK_BAND_MIN_TEXELS 0.5
+#endif
+
 //固定32点泊松盘：前16点为AKG文章表，后16点为其0.5倍内圈。Blocker Search 与 PCF 共用。
 static const float2 pcssDisk[PCSS_MAX_SAMPLES] = {
 float2(0.04369664,-0.17067612),float2(0.94583898,0.92166932),
@@ -310,6 +318,122 @@ float PCSSDirectionalShadow (float3 positionSTS, int tileIndex, float2 sinCos, f
         shadow += PCSSShadowed(SamplePCSSDepth(uv), receiverDist, biasPCFWS, depthRange) ? 0.0 : 1.0;
     }
     return shadow / pcfSamples;
+}
+
+//=========================================================================================
+//====== 半影mask：判定"这个像素到底要不要交给PCSS" ======
+//=========================================================================================
+//返回值就是 mask 该写的值：0 = 全遮、1 = 全亮、0.5 = 半影带（交给PCSS）。
+//必须**两步**判，只看半影宽度是不够的：
+//  ① 迷你 blocker search（半径/bias 都取和 PCSS 的 blocker search 同一套，只是采样点少很多）
+//     ①-a 一处遮挡都没搜到 ⇒ 用"中心点二值判定"的结果（**不能**无脑当受光：blocker 的 bias 很宽，
+//          矮遮挡物搜不出来，无脑返回1会把它们的阴影整块抹掉）
+//     ①-b 估出本地半影宽度 `penumbraWorld`（公式和 PCSS 里一模一样）
+//  ② 半影够粗(>阈值)时，再用这个宽度当半径横向探一圈：中心和邻居的"明暗结论"全一致 ⇒
+//     我离阴影边界比一个半影还远 ⇒ 我不在半影里 ⇒ 直接二值。
+//     这一步是必需的：PCSS 的半影公式在**阴影正中间**也会给出很大的值（那里遮挡物离接收面远、
+//     深度差大），但内部根本不需要PCSS —— 它只会得到0，纯浪费。只有"边界探测"能把内部排除掉。
+//  （两次用到的偏移量都是**世界长度**，换算成 uv 必须分轴：worldToUV2）
+float EstimateShadowBandValue (Surface surfaceWS, ShadowData global, DirectionalShadowData directional,
+    float worldPerMaskTexel)
+{
+    int cascadeCount = max(_CascadeCount, 1);
+    int cascadeIndex = global.cascadeIndex;
+    int tileIndex = directional.tileIndex;//已含级联偏移（见 GetDirectionalShadowData）
+
+    //光空间坐标：法线偏移 + 该级联的 world→light 矩阵（和 GetCascadedShadow 一致）
+    float3 nGeo = PCSSBiasNormal(surfaceWS);
+    float3 positionSTS = mul(_DirectionalShadowMatrices[tileIndex],
+        float4(surfaceWS.position + PCSSNormalBiasOffset(cascadeIndex, nGeo), 1.0)).xyz;
+
+    float uvWidth = 1.0 / cascadeCount;
+    float uvHeight = max(_ShadowAtlasSize.x, 1.0) * uvWidth / max(_ShadowAtlasSize.z, 1.0);
+    float2 uvSize = float2(uvWidth, uvHeight);
+    float2 uvMin = float2(tileIndex % cascadeCount, tileIndex / cascadeCount) * uvSize;
+    float2 halfTexel = _ShadowAtlasSize.yw * 0.5;
+    float2 uvClampMin = uvMin + halfTexel;
+    float2 uvClampMax = uvMin + uvSize - halfTexel;
+
+    float orthoWidth = max(_CascadeData[cascadeIndex].z, 1e-4);
+    float depthRange = max(_CascadeData[cascadeIndex].w, 1e-4);
+    float texelWorld = orthoWidth / max(_ShadowAtlasSize.x * uvWidth, 1e-4);
+    float2 worldToUV2 = float2(uvWidth, uvHeight) / orthoWidth;
+
+    float receiverDist = PCSSDepthToNear(positionSTS.z) * depthRange;
+    float baseBiasWS = _DirectionalPCSSPadding * depthRange;
+    float nl = saturate(dot(nGeo, _DirectionalPCSSLightDir));
+    float slope = min(sqrt(max(0.0, 1.0 - nl * nl)) / max(nl, 0.1), 4.0);//tanθ，clamp防掠射角爆炸
+
+    //① 迷你 blocker search：半径和bias都和 PCSS 的 blocker search 一致 ⇒ 我找到的 blocker 就是它找到的那些
+    //   （3×3，轴向0.67R、对角0.94R，大致铺满搜索半径）
+    float searchWorld = max(_DirectionalPCSSSearchRadius, texelWorld);
+    float searchStepWorld = searchWorld / 1.5;
+    float biasBlockerWS = baseBiasWS + (texelWorld + searchWorld) * slope * _DirectionalPCSSSlopeBias;
+    float blockerSum = 0.0;
+    int blockerCount = 0;
+    [unroll]
+    for (int y = -1; y <= 1; y++)
+    {
+        [unroll]
+        for (int x = -1; x <= 1; x++)
+        {
+            float2 uv = clamp(positionSTS.xy + float2(x, y) * searchStepWorld * worldToUV2,
+                uvClampMin, uvClampMax);
+            float sampleDist = PCSSDepthToNear(SamplePCSSDepth(uv)) * depthRange;
+            if (sampleDist + biasBlockerWS < receiverDist)
+            {
+                blockerSum += sampleDist;
+                blockerCount++;
+            }
+        }
+    }
+    //中心点那一下的深度值（后面二值判定用）
+    float2 uvCenter = clamp(positionSTS.xy, uvClampMin, uvClampMax);
+    float centerDist = PCSSDepthToNear(SamplePCSSDepth(uvCenter)) * depthRange;
+
+    //①-b 没有搜到任何遮挡物：**直接采用中心点的二值判定**，不能无脑返回1（受光）。
+    //     因为 blocker 的 bias 很宽（≈0.6~1.6m 的深度容差），矮遮挡物（0.5m高的箱子，深度差只有
+    //     高度×sin仰角）根本搜不出来 —— 无脑返回1会把它们的阴影整块抹掉。
+    //     PCSS 遇到这种情况会退回"PCF核下限"、照样是暗的，所以这里用中心点的紧判定与它对齐。
+    if (blockerCount == 0)
+    {
+        float biasNoBlockerWS = baseBiasWS + (texelWorld * 2.0) * slope * _DirectionalPCSSSlopeBias;
+        return (centerDist + biasNoBlockerWS < receiverDist) ? 0.0 : 1.0;
+    }
+
+    //② 本地半影宽度（和 PCSS 同一个公式）；细于阈值就说明"PCSS给出来也就是个硬边" ⇒ 直接二值
+    float blockerDist = blockerSum / blockerCount;
+    float ratio = saturate((receiverDist - blockerDist) / max(_DirectionalPCSSPenumbraRef, 1e-5));
+    float penumbraWorld = ratio * _DirectionalPCSSPenumbraMaxWorld;
+
+    //中心点的 bias：和 PCSS 的 PCF bias 同口径（padding + (本纹素 + 本地半影) × 坡度起伏），
+    //这样 mask 写出去的 0/1 和 PCSS 在带子里算出来的值才是同一套东西（紧过头会在亮区留黑点）
+    float biasCenterWS = baseBiasWS + (texelWorld + penumbraWorld) * slope * _DirectionalPCSSSlopeBias;
+    float centerLit = (centerDist + biasCenterWS < receiverDist) ? 0.0 : 1.0;
+    if (penumbraWorld <= MASK_BAND_MIN_TEXELS * max(worldPerMaskTexel, 1e-6))
+    {
+        return centerLit;
+    }
+
+    //③ 边界探测：拿"本地半影宽度"当半径，把中心和邻居比明暗（两边用同一套bias ⇒ 系统偏差互相抵消）
+    float centerShadowed = (centerDist + biasCenterWS < receiverDist) ? 1.0 : 0.0;
+    [unroll]
+    for (int y = -1; y <= 1; y++)
+    {
+        [unroll]
+        for (int x = -1; x <= 1; x++)
+        {
+            float2 uv = clamp(positionSTS.xy + float2(x, y) * penumbraWorld * worldToUV2,
+                uvClampMin, uvClampMax);
+            float sampleDist = PCSSDepthToNear(SamplePCSSDepth(uv)) * depthRange;
+            float sampleShadowed = (sampleDist + biasCenterWS < receiverDist) ? 1.0 : 0.0;
+            if (sampleShadowed != centerShadowed)
+            {
+                return 0.5;//边界就在一个半影宽度之内 ⇒ 这才是真正需要PCSS的地方
+            }
+        }
+    }
+    return centerLit;//边界比一个半影还远（在亮处、或在阴影正中间）⇒ 这个像素就是纯0/1
 }
 
 //每2x2屏幕像素共享的泊松盘旋转角（IGN式小参数哈希，避免大整数sin精度退化）
