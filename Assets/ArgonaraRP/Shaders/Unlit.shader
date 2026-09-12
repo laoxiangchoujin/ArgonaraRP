@@ -58,6 +58,54 @@ Shader "Argonara RP/Unlit"
 			ENDHLSL
         }
 
+		//深度法线prepass：屏幕空间阴影/SSAO用。和Lit一致：写**几何法线** + 深度。
+		//Unlit的shader里本来没有法线相关的输入/输出，所以这里自带 Attributes/Varyings/顶点函数，
+		//fragment 直接复用共用的 DepthNormalsPass.hlsl（它只要求 Varyings 里有 positionCS_SS/baseUV/normalWS）。
+		Pass
+		{
+			Tags{"LightMode" = "DepthNormals"}
+
+			HLSLPROGRAM
+			#pragma target 3.5
+			#pragma shader_feature _CLIPPING
+			#pragma multi_compile _ LOD_FADE_CROSSFADE
+			#pragma multi_compile_instancing
+			#pragma vertex UnlitDepthNormalsPassVertex
+			#pragma fragment DepthNormalsPassFragment
+
+			struct Attributes
+			{
+				float3 positionOS : POSITION;
+				float3 normalOS : NORMAL;
+				float2 baseUV : TEXCOORD0;
+				UNITY_VERTEX_INPUT_INSTANCE_ID
+			};
+
+			struct Varyings
+			{
+				float4 positionCS_SS : SV_POSITION;
+				float3 normalWS : VAR_NORMAL;
+				float2 baseUV : VAR_BASE_UV;
+				UNITY_VERTEX_INPUT_INSTANCE_ID
+			};
+
+			Varyings UnlitDepthNormalsPassVertex (Attributes input)
+			{
+				Varyings output;
+				UNITY_SETUP_INSTANCE_ID(input);
+				UNITY_TRANSFER_INSTANCE_ID(input, output);
+
+				float3 positionWS = TransformObjectToWorld(input.positionOS);
+				output.positionCS_SS = TransformWorldToHClip(positionWS);
+				output.normalWS = TransformObjectToWorldNormal(input.normalOS);
+				output.baseUV = TransformBaseUV(input.baseUV);
+				return output;
+			}
+
+			#include "DepthNormalsPass.hlsl"
+			ENDHLSL
+		}
+
 		Pass
 		{
 			Tags{"LightMode" = "Meta"}

@@ -50,6 +50,10 @@ public class ShadowSettings
         public struct Pcss
         {
             public bool enabled;//总开关
+            //屏幕空间阴影（第3步）：开启后把PCSS结果先写成一张屏幕空间阴影图（并做两趟blur），再由光照Pass采样；
+            //关掉就走"光照Pass里直接算PCSS"的老路线（两张屏幕空间贴图也不会被创建）。
+            //注意：旧资产里没有这个键 → 反序列化是关的，要实测时请在Inspector里勾上。
+            public bool screenSpaceBlur;
             //Blocker Search 的搜索半径：不用填世界长度，而是"取最细级联(cascade0)的这么多个纹素"作为世界半径。
             //这样它会自动随分辨率、级联比例、相机设置变化；每个级联另外保证至少能搜到自己 1 个纹素。
             //(≤0 视为默认 20)

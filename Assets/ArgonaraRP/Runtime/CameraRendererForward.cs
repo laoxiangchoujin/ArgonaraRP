@@ -92,7 +92,7 @@ public partial class CameraRendererForward : CameraRendererBase
         postFXStack.Setup(context, camera, bufferSize, postFXSettings, useHDR, colorLUTResolution, cameraSettings.finalBlendMode, bufferSettings.bicubicRescaling);
         buffer.EndSample(SampleName);
         
-        Setup();//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程   //第二个beginSample
+        Setup(shadowSettings);//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程   //第二个beginSample
         DrawVisibleGeometry(useDynamicBatching, useGPUInsancing, useLightsPerObject,
             cameraSettings.renderingLayerMask);
         DrawUnsupportedShaders();
@@ -139,6 +139,20 @@ public partial class CameraRendererForward : CameraRendererBase
     static int depthAttachmentId = Shader.PropertyToID("_CameraDepthAttachment");
     static int colorTextureId = Shader.PropertyToID("_CameraColorTexture");
     static int depthTextureId = Shader.PropertyToID("_CameraDepthTexture");
+    //深度法线prepass（屏幕空间阴影/SSAO用）的法线图：与延迟的GBuffer2同用途，只是名字不同
+    static int normalsTextureId = Shader.PropertyToID("_CameraNormalsTexture");
+    //告诉shader"当前是前向还是延迟"（1=延迟、0=前向）：用于区分"用途相同但名字不同"的纹理
+    static int useDeferredRendererId = Shader.PropertyToID("_UseDeferredRenderer");
+
+    //屏幕空间阴影图（第3步）及其blur临时图：半分辨率、R8（和延迟那边同名同义，shader 才能共用）
+    static int screenSpaceShadowTexId = Shader.PropertyToID("_ScreenSpaceShadowTex");
+    static int screenSpaceShadowTexTempBlurId = Shader.PropertyToID("_ScreenSpaceShadowTex_TempBlur");
+    //这张图自己的纹素尺寸（xy = 1/宽、1/高）：blur取邻居要用它
+    static int screenSpaceShadowTexelSizeId = Shader.PropertyToID("_ScreenSpaceShadowTexelSize");
+    //本帧是否走屏幕空间阴影：在 Setup 里按设置定下，Cleanup 用同一个值配对释放
+    bool useScreenSpaceShadow;
+    //告诉光照shader"这之后画的物体采样屏幕空间阴影图"（和延迟那边同名同义）
+    static int screenSpaceShadowEnabledId = Shader.PropertyToID("_ScreenSpaceShadowEnabled");
     static int sourceTextureId = Shader.PropertyToID("_SourceTexture");
     static int srcBlendId = Shader.PropertyToID("_CameraSrcBlend");
     static int dstBlendId = Shader.PropertyToID("_CameraDstBlend");
@@ -146,13 +160,22 @@ public partial class CameraRendererForward : CameraRendererBase
     private static int bufferSizeId = Shader.PropertyToID("_CameraBufferSize");//因为unity默认提供的_ScreenParams数值不会随我们的渲染缩放调整，需要自己传值替代
     
     ///将相机的属性应用于上下文context
-    void Setup()
+    void Setup(ShadowSettings shadowSettings)
     {
         context.SetupCameraProperties(camera); //渲染前设置正确的相机矩阵unity_MatrixVP
+        //手动设置 unity_MatrixInvVP（SetupCameraProperties 可能不设它）：屏幕空间阴影要用它从深度重建世界坐标
+        Matrix4x4 view = camera.worldToCameraMatrix;
+        Matrix4x4 proj = GL.GetGPUProjectionMatrix(camera.projectionMatrix, true);
+        buffer.SetGlobalMatrix(Shader.PropertyToID("unity_MatrixInvVP"), (proj * view).inverse);
+
+        //本帧是否走屏幕空间阴影（第3步）：开关开着、并且配了shader才走
+        useScreenSpaceShadow = shadowSettings.directional.pcss.screenSpaceBlur && screenSpaceShadowMaterial;
+
         CameraClearFlags flags = camera.clearFlags;//它有4个值，1~4是Skybox,Color,Depth,Nothing，
 
+        //屏幕空间阴影需要"可读的深度"和自己的RT，所以也强制走中间缓冲
         useIntermediateBuffer = useScaleRendering || 
-                                useColorTexture || useDepthTexture || postFXStack.IsActive;
+                                useColorTexture || useDepthTexture || postFXStack.IsActive || useScreenSpaceShadow;
         if (useIntermediateBuffer)//若要执行FX堆栈，则需要获取帧缓冲
         {
             if (flags > CameraClearFlags.Color)//color是2，只清depth或什么都不清是3或4
@@ -172,6 +195,16 @@ public partial class CameraRendererForward : CameraRendererBase
             //原来的写法：buffer.SetRenderTarget(frameBufferId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);//是一张纹理一个帧缓冲区
         }
         
+        //深度法线prepass要用的法线图（屏幕空间阴影/SSAO）：目前始终创建，先不管条件
+        buffer.GetTemporaryRT(normalsTextureId, bufferSize.x, bufferSize.y, 0, FilterMode.Point,
+            RenderTextureFormat.ARGB2101010, RenderTextureReadWrite.Linear);
+        buffer.SetGlobalTexture(normalsTextureId, normalsTextureId);
+        //这是前向渲染器
+        buffer.SetGlobalInt(useDeferredRendererId, 0);
+
+        //屏幕空间阴影（第3步）的两张半分辨率图：开关关掉就不创建
+        AllocateScreenSpaceShadowTextures();
+
         buffer.ClearRenderTarget(
             flags < CameraClearFlags.Nothing, //除了清除标识为nothing以外都要清除深度缓冲
             flags <= CameraClearFlags.Color, 
@@ -180,6 +213,97 @@ public partial class CameraRendererForward : CameraRendererBase
         buffer.SetGlobalTexture(colorTextureId, missingTexture);//默认空纹理占位，避免未启用时shader报错
         buffer.SetGlobalTexture(depthTextureId, missingTexture);
         ExecuteBuffer();
+    }
+
+    //屏幕空间阴影（第3步）的两张半分辨率图：开关关掉就什么都不创建
+    void AllocateScreenSpaceShadowTextures()
+    {
+        if (!useScreenSpaceShadow)
+        {
+            return;
+        }
+
+        //半分辨率：像素数变1/4（PCSS采样和两趟blur都省4倍），同样抽头覆盖范围翻倍（更平滑）
+        int width = Mathf.Max(1, bufferSize.x / 2), height = Mathf.Max(1, bufferSize.y / 2);
+        buffer.GetTemporaryRT(screenSpaceShadowTexId, width, height, 0, FilterMode.Point,
+            RenderTextureFormat.R8, RenderTextureReadWrite.Linear);
+        buffer.GetTemporaryRT(screenSpaceShadowTexTempBlurId, width, height, 0, FilterMode.Point,
+            RenderTextureFormat.R8, RenderTextureReadWrite.Linear);
+        //blur要按这张图自己的纹素尺寸取邻居（半分辨率时 = 屏幕纹素的2倍）
+        buffer.SetGlobalVector(screenSpaceShadowTexelSizeId, new Vector4(1f / width, 1f / height, width, height));
+    }
+
+    //屏幕空间阴影（第3步）：① 深度法线prepass ② 把深度拷成可读纹理 ③ 生成 + 横/竖两趟blur
+    //必须在opaque之前调用（opaque的光照要采样这张图），且此时离屏阴影已经画好了。
+    void DrawScreenSpaceShadowGeometry(bool useDynamicBatching, bool useGPUInsancing, int renderingLayerMask)
+    {
+        //① 深度法线prepass：深度写进"主pass要用的同一个深度附件"，法线写进 _CameraNormalsTexture。
+        //   深度用Load（Setup里已经清过了，这里不要重复清），只清法线图。
+        //   帧调试器分组：和延迟一个套路（命令缓冲区名 + 同名sample）
+        buffer.name = "Depth Normals Prepass";
+        buffer.BeginSample("Depth Normals Prepass");
+        buffer.SetRenderTarget(normalsTextureId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
+            depthAttachmentId, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store);
+        buffer.ClearRenderTarget(false, true, Color.clear);
+        //先执行一下：DrawRenderers 是 context 调用、会立刻执行，得让上面的 BeginSample 先生效，它才会落进这个组
+        ExecuteBuffer();
+
+        var sortingSettings = new SortingSettings(camera)
+        {
+            criteria = SortingCriteria.CommonOpaque
+        };
+        var drawingSettings = new DrawingSettings(depthNormalsShaderTagId, sortingSettings)
+        {
+            enableDynamicBatching = useDynamicBatching,
+            enableInstancing = useGPUInsancing,
+            perObjectData = PerObjectData.None//prepass只要有变换/法线，不需要灯光之类的per-object数据
+        };
+        var filteringSettings = new FilteringSettings(RenderQueueRange.opaque, renderingLayerMask: (uint)renderingLayerMask);
+        context.DrawRenderers(cullingResults, ref drawingSettings, ref filteringSettings);
+        ExecuteBuffer();
+        buffer.EndSample("Depth Normals Prepass");
+        ExecuteBuffer();
+
+        //② 把深度拷成可读纹理：pass0要采样它来重建世界坐标
+        //（后面 CopyAttachments 里那段就不会再拷一次了，见那边的注释）
+        buffer.name = "Copy Depth";
+        buffer.GetTemporaryRT(depthTextureId, bufferSize.x, bufferSize.y, 32, FilterMode.Point, RenderTextureFormat.Depth);
+        if (copyTextureSupported)
+        {
+            buffer.CopyTexture(depthAttachmentId, depthTextureId);
+        }
+        else
+        {
+            Draw(depthAttachmentId, depthTextureId, true);
+        }
+        buffer.SetGlobalTexture(depthTextureId, depthTextureId);
+        ExecuteBuffer();
+
+        //③ 三趟：生成 → 横向blur → 纵向blur（和延迟那边一模一样）
+        //   帧调试器分组：整个"屏幕空间阴影（生成+两趟blur）"一个组
+        buffer.name = "Screen Space Shadow";
+        buffer.BeginSample("Screen Space Shadow");
+        buffer.SetRenderTarget(screenSpaceShadowTexId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
+        buffer.DrawProcedural(Matrix4x4.identity, screenSpaceShadowMaterial,
+            (int)ScreenSpaceShadowPass.PCSS, MeshTopology.Triangles, 3);
+        buffer.SetGlobalTexture(screenSpaceShadowTexId, screenSpaceShadowTexId);//给下一趟采样
+
+        buffer.SetRenderTarget(screenSpaceShadowTexTempBlurId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
+        buffer.DrawProcedural(Matrix4x4.identity, screenSpaceShadowMaterial,
+            (int)ScreenSpaceShadowPass.BlurHorizontal, MeshTopology.Triangles, 3);
+        buffer.SetGlobalTexture(screenSpaceShadowTexTempBlurId, screenSpaceShadowTexTempBlurId);//给下一趟采样
+
+        buffer.SetRenderTarget(screenSpaceShadowTexId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
+        buffer.DrawProcedural(Matrix4x4.identity, screenSpaceShadowMaterial,
+            (int)ScreenSpaceShadowPass.BlurVertical, MeshTopology.Triangles, 3);
+
+        //恢复主渲染目标（Load：保住Setup里清好的颜色、以及prepass写好的深度），并把结果绑给后面的光照采样
+        buffer.SetGlobalTexture(screenSpaceShadowTexId, screenSpaceShadowTexId);
+        buffer.SetRenderTarget(colorAttachmentId, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store,
+            depthAttachmentId, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store);
+        buffer.EndSample("Screen Space Shadow");
+        ExecuteBuffer();
+        buffer.name = bufferName;//恢复缓冲区名，别影响后面的分组
     }
 
     ///我们向上下文context发送的命令都是缓冲的，要在context调用submit提交，排队的工作才会执行
@@ -200,7 +324,8 @@ public partial class CameraRendererForward : CameraRendererBase
     
     //定义Shader
     private static ShaderTagId unlitShaderTagId = new ShaderTagId("SRPDefaultUnlit"), //无光照shader
-        litShaderTagId = new ShaderTagId("ArgonaraLit");
+        litShaderTagId = new ShaderTagId("ArgonaraLit"),
+        depthNormalsShaderTagId = new ShaderTagId("DepthNormals");//深度法线prepass（屏幕空间阴影/SSAO用）
 
     
     
@@ -209,6 +334,20 @@ public partial class CameraRendererForward : CameraRendererBase
         int renderingLayerMask)
     {
         PerObjectData lightsPerObjectFlags = useLightsPerObject ? PerObjectData.LightData | PerObjectData.LightIndices : PerObjectData.None;//若启用逐对象光照，则传递逐物体的光照信息和光源索引
+
+        //=== 屏幕空间阴影（第3步）===
+        //必须在opaque之前：opaque的光照要采样这张图；而且它自己要先跑一遍"深度法线prepass"
+        if (useScreenSpaceShadow)
+        {
+            DrawScreenSpaceShadowGeometry(useDynamicBatching, useGPUInsancing, renderingLayerMask);
+        }
+
+        //=== 所有物体的实际绘制（opaque + 天空盒 + transparent）：单独打一个组 ===
+        buffer.name = "Draw Geometry";
+        buffer.BeginSample("Draw Geometry");
+        //先执行一下：DrawRenderers 是 context 调用、会立刻执行，得让上面的 BeginSample 先生效，它才会落进这个组
+        ExecuteBuffer();
+
         //绘制opaque物体
         var sortingSettings = new SortingSettings(camera)
         {
@@ -229,6 +368,9 @@ public partial class CameraRendererForward : CameraRendererBase
         };
         drawingSettings.SetShaderPassName(1, litShaderTagId);
         var filteringSettings = new FilteringSettings(RenderQueueRange.opaque, renderingLayerMask: (uint)renderingLayerMask);
+        //告诉光照shader：从这之后画的物体都采样屏幕空间阴影图（opaque 和 transparent 都用；关了就是0，走逐像素PCSS）
+        buffer.SetGlobalFloat(screenSpaceShadowEnabledId, useScreenSpaceShadow ? 1f : 0f);
+        ExecuteBuffer();
         context.DrawRenderers(cullingResults,ref drawingSettings, ref filteringSettings);
         
         //绘制天空盒，原本是context.DrawSkybox(camera);但说已过时
@@ -253,6 +395,12 @@ public partial class CameraRendererForward : CameraRendererBase
         drawingSettings.sortingSettings = sortingSettings;
         filteringSettings.renderQueueRange = RenderQueueRange.transparent;
         context.DrawRenderers(cullingResults,ref drawingSettings, ref filteringSettings);
+
+        //屏幕空间阴影图用完了就关掉，别影响后面的相机/后处理
+        buffer.SetGlobalFloat(screenSpaceShadowEnabledId, 0f);
+        buffer.EndSample("Draw Geometry");
+        ExecuteBuffer();
+        buffer.name = bufferName;//恢复缓冲区名，别影响后面的分组
     }
 
     ///用于释放申请的纹理等
@@ -267,10 +415,19 @@ public partial class CameraRendererForward : CameraRendererBase
             {
                 buffer.ReleaseTemporaryRT(colorTextureId);
             }
-            if (useDepthTexture)
+            if (useDepthTexture || useScreenSpaceShadow)//屏幕空间阴影也会自己拷一份深度，所以它也要释放
             {
                 buffer.ReleaseTemporaryRT(depthTextureId);
             }
+        }
+        //prepass的法线图是"始终创建"的，所以无条件释放
+        buffer.ReleaseTemporaryRT(normalsTextureId);
+
+        //屏幕空间阴影的两张图：只有本帧真的创建过才释放
+        if (useScreenSpaceShadow)
+        {
+            buffer.ReleaseTemporaryRT(screenSpaceShadowTexId);
+            buffer.ReleaseTemporaryRT(screenSpaceShadowTexTempBlurId);
         }
     }
 
@@ -293,7 +450,8 @@ public partial class CameraRendererForward : CameraRendererBase
             }
         }
         //深度纹理拷贝（软粒子等需要）
-        if (useDepthTexture)
+        //注意：屏幕空间阴影那段（prepass之后）已经把深度拷过一次了，不能再拷/再申请同一张临时图
+        if (useDepthTexture && !useScreenSpaceShadow)
         {
             buffer.GetTemporaryRT(depthTextureId, bufferSize.x, bufferSize.y, 32, FilterMode.Point, RenderTextureFormat.Depth);
             if (copyTextureSupported)
@@ -315,11 +473,30 @@ public partial class CameraRendererForward : CameraRendererBase
 
     Material material;
 
+    //屏幕空间阴影（第3步）的材质，由 ScreenSpacePCSS.shader 创建
+    Material screenSpaceShadowMaterial;
+
+    //ScreenSpacePCSS.shader 里的 pass 顺序（必须和 shader 里 Pass 的先后一致）
+    enum ScreenSpaceShadowPass
+    {
+        PCSS,
+        BlurHorizontal,
+        BlurVertical
+    }
+
     Texture2D missingTexture;//因为深度纹理是可选的，所以需要一个缺失的纹理，来避免没有深度纹理时的错误
     
-    public CameraRendererForward(Shader shader)
+    public CameraRendererForward(Shader shader, Shader screenSpaceShadowShader)
     {
         material = CoreUtils.CreateEngineMaterial(shader);//创建一个材质并隐藏，不会保存为资产
+        if (screenSpaceShadowShader)
+        {
+            screenSpaceShadowMaterial = CoreUtils.CreateEngineMaterial(screenSpaceShadowShader);
+        }
+        else//没配shader就退化成"不使用屏幕空间阴影"，而不是报错
+        {
+            Debug.LogWarning("Argonara RP: 管线资产里没有指定 Screen Space Shadow Shader，前向的屏幕空间阴影（PCSS第3步）不可用");
+        }
         missingTexture = new Texture2D(1, 1)
         {
             hideFlags = HideFlags.HideAndDontSave, name = "Missing"
@@ -331,6 +508,7 @@ public partial class CameraRendererForward : CameraRendererBase
     public override void Dispose()
     {
         CoreUtils.Destroy(material);
+        CoreUtils.Destroy(screenSpaceShadowMaterial);
         CoreUtils.Destroy(missingTexture);
     }
 

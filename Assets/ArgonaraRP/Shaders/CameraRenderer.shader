@@ -53,7 +53,10 @@ Shader "Hidden/ArgonaraRP/Camera Renderer"//hidden的不会在inspector里显示
 			
             #pragma multi_compile _ _DIRECTIONAL_PCSS//PCSS 单独一组（不再与 PCF 档位互斥）
             #pragma multi_compile _ _SHADOW_PCF3 _SHADOW_PCF5 _SHADOW_PCF7//定向光与其他光共用同一套 PCF 档位；单个“_”为硬件PCF2x2
-            #pragma multi_compile _ _CASCADE_BLEND_SOFT _CASCADE_BLEND_DITHER
+            //#pragma multi_compile _ _CASCADE_BLEND_SOFT _CASCADE_BLEND_DITHER
+            //↑ 注释掉的原因：级联混合模式(Hard/Soft/Dither)是管线资产里的全局设置，改成运行时 uniform(_CascadeBlendMode = 0/1/2) 了。
+            //  用关键字会让本 pass 的变体 ×3，而且每次在 Inspector 里切换都要重新编译 shader；换成 uniform 后全屏走同一条分支，开销可忽略。
+            //  (C# 在 Shadows.Render() 里上传，shader 在 GetShadowData 里 if 分支)
 			
 			//1.！和forward不一样的地方！shader_feature的variant选择靠材质关键字，DrawProcedural用的material上没开_RECEIVE_SHADOWS keyword，所以会是无阴影。
 			//换成，multi_compile 的 variant 选择靠全局关键字，Unity SRP 自动管理它，所以能正确接受阴影。
@@ -64,7 +67,7 @@ Shader "Hidden/ArgonaraRP/Camera Renderer"//hidden的不会在inspector里显示
 			//2.！和forward不一样的地方！延迟 Pass 是 Fullscreen Quad，没有"逐物体"的概念。_LIGHTS_PER_OBJECT是让点光源循环走 unity_LightIndices（逐物体索引）
 			//这对全屏 Pass 没意义，索引全是 0，所以注释掉，走全局循环GetOtherLightCount()
             //#pragma multi_compile _ _LIGHTS_PER_OBJECT//针对点光源或聚光灯的逐物体光照
-            #pragma multi_compile_instancing
+            //#pragma multi_compile_instancing
 			
 			#pragma vertex DefaultPassVertex
 			#pragma fragment DeferredLightPassFragment

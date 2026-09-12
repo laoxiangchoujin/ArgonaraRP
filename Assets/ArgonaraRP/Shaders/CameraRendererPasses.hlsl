@@ -103,7 +103,7 @@ float4 DeferredLightPassFragment(Varyings input) : SV_Target
         surface.normal = normal;
         surface.interpolatedNormal = normal;
         surface.viewDirection = normalize(_WorldSpaceCameraPos - surface.position);
-        surface.depth = GTDepth;//存疑？
+        surface.depth = -TransformWorldToView(surface.position).z;
         surface.albedo = color;
         surface.alpha = 1.0;
     

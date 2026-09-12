@@ -37,10 +37,14 @@ public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPip
 
     [SerializeField] 
     Shader cameraRendererShader = default;
+
+    //屏幕空间阴影（PCSS第3步）用的shader：走"生成屏幕空间阴影图 + 两趟blur"的路线时要用
+    [SerializeField]
+    Shader screenSpaceShadowShader = default;
     
     protected override RenderPipeline CreatePipeline()
     {
         return new ArgonaraRenderPipeline(cameraRendererType, cameraBuffer, useDynamicBatching, useGPUInstancing, useSRPBatcher, 
-            useLightsPerObject, shadows, postFXSettings, (int)colorLUTResolution, cameraRendererShader);
+            useLightsPerObject, shadows, postFXSettings, (int)colorLUTResolution, cameraRendererShader, screenSpaceShadowShader);
     }
 }

@@ -17,6 +17,7 @@ public class Shadows
 		cascadeDataId = Shader.PropertyToID("_CascadeData"),//要解决shadow acne，要考虑世界空间纹素大小一致，so传递级联数据
 		shadowAtlasSizeId = Shader.PropertyToID("_ShadowAtlasSize"),//较大的滤波器需要更多的纹理采样，因此我们需要知道图集的大小和纹素大小
 		shadowDistanceFadeId = Shader.PropertyToID("_ShadowDistanceFade"),//同时包括最大距离和fade衰减
+		cascadeBlendModeId = Shader.PropertyToID("_CascadeBlendMode"),//级联混合模式(0 Hard/1 Soft/2 Dither)：替代原来的 _CASCADE_BLEND_* 关键字
 		shadowPancakingId = Shader.PropertyToID("_ShadowPancaking");//定向光正交投影用panCaking，而其他的用透视投影的不能用panCaking，否则会变形出错
 
 	//PCSS（只对主定向光）用到的全局
@@ -52,7 +53,7 @@ public class Shadows
 			settings.directional.pcss.searchTexels : pcssSearchTexelsDefault) * pcssTexelWorld0;
 
 	//半影上限：把"最细级联的 N 个纹素"换算成一个**恒定世界长度**(与级联无关)。
-	//级联相关的量只留在 shader 的 worldToUV 换算里；一旦让半影本身带上级联的量(比如"本級联的 N 纹素")，
+	//级联相关的量只留在 shader 的 worldToUV2（分轴）换算里；一旦让半影本身带上级联的量(比如"本級联的 N 纹素")，
 	//世界半影就会逐级联翻倍 → 看起来"越远越糊 / 越近越糊"。
 	float PCSSPenumbraMaxWorld =>
 		Mathf.Clamp(settings.directional.pcss.filterTexels > 0 ?
@@ -99,7 +100,12 @@ public class Shadows
 		otherShadowMatrices = new Matrix4x4[maxShadowedOtherLightCount];//它是每个灯一个
 	
 	static Vector4[] cascadeCullingSpheres = new Vector4[maxCascades],
-		cascadeData = new Vector4[maxCascades],//它要存什么？
+		//每个级联的采样参数（由 SetCascadeData 写入）：
+		//x = 1/剔除球半径²（shader里比的是距离平方，存倒数省一次除法）
+		//y = filterSize × √2 = 法线偏移用的世界长度（shadow normal bias 乘它）
+		//z = tile 正交投影的世界宽度 = 2×球半径（PCSS 的 世界长度 → uv 换算用）
+		//w = 光相机深度范围 far-near（PCSS 把归一化深度换算成世界距离用）
+		cascadeData = new Vector4[maxCascades],
 		otherShadowTiles = new Vector4[maxShadowedOtherLightCount];
 
 	//级联调试用：直接从“相机 + 阴影设置”现算各级联包围球（xyz=球心, w=半径）。
@@ -214,7 +220,6 @@ public class Shadows
 	{
 		public int visibleLightIndex;
 		public float slopeScaleBias;
-		public float nearPlaneOffset;
 		//这个struct是渲染阴影用的配置，而normalBias是采样用的配置，就不需要放进来
 	};
 
@@ -261,8 +266,7 @@ public class Shadows
 			ShadowedDirectionalLights[ShadowedDirectionalLightCount] = new ShadowedDirectionalLight
 				{
 					visibleLightIndex = visibleLightIndex ,
-					slopeScaleBias = light.shadowBias,//Light component上边的属性，这个就是斜率bias
-					nearPlaneOffset = light.shadowNearPlane
+					slopeScaleBias = light.shadowBias//Light component上边的属性，这个就是斜率bias
 				};//如果某一个光要产生阴影，就记录它的index
 			return new Vector4(light.shadowStrength, settings.directional.cascadeCount * ShadowedDirectionalLightCount++, light.shadowNormalBias, maskChannel);
 			//第二个参数，是阴影图块偏移，决定每个灯的起始tile，例如4灯*4级联，第一个灯级联在0~3(起始在0)，第二个灯级联在4~7(起始在4)，第三个灯级联在8~11...
@@ -352,6 +356,10 @@ public class Shadows
 		//PCF 档位（定向光与其他光共用一套关键字）：放在这里而不是 RenderDirectionalShadows / RenderOtherShadows 里，
 		//因为那两个函数各自可能因"没有带阴影的定向光"/"没有其他光源"而不执行，关键字会残留上一帧的值
 		SetKeywords(shadowFilterKeywords, (int)settings.filter - 1);
+		//级联混合模式(Hard/Soft/Dither)：改成 uniform 上传，不再用 _CASCADE_BLEND_* 关键字。
+		//它和 PCF 档位一样也必须在这里（而不是 RenderDirectionalShadows 里）：没有带阴影的定向光时那个函数不执行，
+		//值会残留上一帧。用它替代关键字后，好处是变体少 3 倍 + 在 Inspector 里切换不再触发重新编译。
+		buffer.SetGlobalInt(cascadeBlendModeId, (int)settings.directional.cascadeBlend);
 		//搜索半径：锚定"最细级联的 N 个纹素"，自动随分辨率/级联比例变化
 		//(每个级联还有"至少搜到自己2个纹素"的下限，写在 shader 里)
 		buffer.SetGlobalFloat(pcssSearchRadiusId, PCSSSearchRadiusWorld);
@@ -428,7 +436,10 @@ public class Shadows
 		//buffer.SetGlobalFloat(shadowDistanceId, settings.maxDistance);
 		//float f = 1f - settings.directional.cascadeFade;//实现级联阴影最外层与外边的平滑过渡（类似最大距离的fade），这个用平方衰减
 		//buffer.SetGlobalVector(shadowDistanceFadeId, new Vector4(1f / settings.maxDistance, 1f / settings.distanceFade, 1f/(1f - f * f)));//用除法，这样shader里就能用乘法，快一点
-		SetKeywords(cascadeBlendKeywords, (int)settings.directional.cascadeBlend - 1);
+		//SetKeywords(cascadeBlendKeywords, (int)settings.directional.cascadeBlend - 1);
+		//↑ 改成 uniform 了：C# 在 Render() 里 SetGlobalInt(_CascadeBlendMode)，shader 里用 if 分支。
+		//  原因：这 3 个值是管线资产里的全局设置，用关键字只会让每个 pass 的变体 ×3，且每次切换都要重新编译 shader；
+		//  代价只是全屏同一条分支（无分歧），可忽略。
 		//buffer.SetGlobalVector(shadowAtlasSizeId, new Vector4(atlasSize, 1f / atlasSize));
 		buffer.EndSample(bufferName);
 		ExecuteBuffer();
@@ -474,7 +485,8 @@ public class Shadows
 			Light unityLight = cullingResults.visibleLights[light.visibleLightIndex].light;
 			ComputeDirectionalShadowMatricesAndCullingSphere(
 				i, tileSize, unityLight,
-				out Vector4 cullingSphere, out Matrix4x4 viewMatrix, out Matrix4x4 projectionMatrix
+				out Vector4 cullingSphere, out Matrix4x4 viewMatrix, out Matrix4x4 projectionMatrix,
+				out float depthRange
 			);
 			ShadowSplitData splitData = new ShadowSplitData
 			{
@@ -485,8 +497,7 @@ public class Shadows
 			if (index == 0)
 			{
 				//只对第0个光源执行 SetCascadeData（因为所有光的级联裁剪球是等效的）
-				//depthRange = 2*backDistance（与 shader 里正交投影的 far-near 一致），PCSS 用它把归一化深度换算成世界距离
-				float depthRange = cullingSphere.w * light.nearPlaneOffset * 20f;
+				//depthRange 由 ComputeDirectionalShadowMatricesAndCullingSphere 顺手算出（= 2×backDistance，与正交投影的 far-near 一致）
 				SetCascadeData(i, cullingSphere, tileSize, depthRange);
 				if (i == 0)
 				{
@@ -507,9 +518,11 @@ public class Shadows
 	}
 
 	//支持任意级联数的自定义级联矩阵/包围球计算（文章B思路），引擎API最多只能传Vector3的splitRatio→4级
-	//注意：settings.directional.cascadeRatios 长度要 >= cascadeCount，且最后一项应是1（第8级覆盖整个maxDistance）
+	//cascadeRatios 存的是"前 cascadeCount-1 级的内部分界比例"，代码只取前 cascadeCount-1 项；
+	//最后一级恒延伸到整个 maxDistance（比例=1），所以数组末尾不需要那个1（写了也会被忽略），长度 >= cascadeCount-1 即可
+	//（见 ComputeCascadeSphereGeometry 和 ShadowSettings.directional.cascadeRatios）
 	bool ComputeDirectionalShadowMatricesAndCullingSphere(int cascadeIndex, int shadowResolution, Light light,
-		out Vector4 cullingSphere, out Matrix4x4 viewMatrix, out Matrix4x4 projectionMatrix)
+		out Vector4 cullingSphere, out Matrix4x4 viewMatrix, out Matrix4x4 projectionMatrix, out float depthRange)
 	{
 		//只在与相机相关的数据上才缓存，每灯第0个级联会刷新
 		if (cascadeIndex == 0)
@@ -559,43 +572,22 @@ public class Shadows
 		Matrix4x4 scaleMatrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(1, 1, -1));
 		viewMatrix = scaleMatrix * lookMatrix.inverse;
 
-		projectionMatrix = Matrix4x4.Ortho(-sphereR, sphereR, -sphereR, sphereR, 0.0f, 2.0f * backDistance);
+		//深度范围(far-near) = 2×backDistance：这里算完直接交给调用方（SetCascadeData）。
+		//别处不要再重复写一份同样的公式：PCSS 用它把归一化深度换算成世界距离，两处不同步会让偏差整体放大。
+		depthRange = 2f * backDistance;
+		projectionMatrix = Matrix4x4.Ortho(-sphereR, sphereR, -sphereR, sphereR, 0.0f, depthRange);
 
 		return true;
 	}
 
 	//从“世界坐标->裁剪空间坐标”变成“世界坐标->shadowmap对应位置的纹理坐标”
+	//单 scale 版（其他光源用：它的 tile 是正方形，x/y 缩放相同）→ 直接复用下面的双 scale 版，避免两份重复实现
 	Matrix4x4 ConvertToAtlasMatrix(Matrix4x4 m, Vector2 offset, float scale)
 	{
-		if (SystemInfo.usesReversedZBuffer)//系统若在用反向ZBuffer，把矩阵Z都取反//传统OpenGL，0近1远是正常的Z，Vulkan/DX，Z是1近0远是reversed Z
-		{
-			m.m20 = -m.m20;
-			m.m21 = -m.m21;
-			m.m22 = -m.m22;
-			m.m23 = -m.m23;
-		}
-
-		//剪裁空间是-1到1的立方体。但是纹理坐标和深度范围0到1。通过将XYZ维度进行缩放和偏移，让shader里矩阵变换后能直接采样贴图。实际上就是对所有xyz*0.5+0.5
-		//		虽然可以通过矩阵乘法来实现这一点，但这将导致大量的零乘法和不必要的加法运算。因此，直接调整矩阵
-		//然后再加上应用图块的偏移和缩放
-		//下边的操作等同于：左乘应用*0.5+0.5的矩阵，再左乘tile偏移缩放的矩阵
-		//float scale = 1f / split;
-		m.m00 = (0.5f * (m.m00 + m.m30) + offset.x * m.m30) * scale;//(0.5f * (m.m00 + m.m30)就是原值 * 0.5 + 0.5 的矩阵乘法展开形式，只是简化的计算结果而已
-		m.m01 = (0.5f * (m.m01 + m.m31) + offset.x * m.m31) * scale;//(.... + offset * m3n)*scale，就是让采样的时候，xy*scale缩放，再加上offset*scale偏移
-		m.m02 = (0.5f * (m.m02 + m.m32) + offset.x * m.m32) * scale;
-		m.m03 = (0.5f * (m.m03 + m.m33) + offset.x * m.m33) * scale;
-		m.m10 = (0.5f * (m.m10 + m.m30) + offset.y * m.m30) * scale;
-		m.m11 = (0.5f * (m.m11 + m.m31) + offset.y * m.m31) * scale;
-		m.m12 = (0.5f * (m.m12 + m.m32) + offset.y * m.m32) * scale;
-		m.m13 = (0.5f * (m.m13 + m.m33) + offset.y * m.m33) * scale;
-		//Z只需要*0.5+0.5，让深度映射到 [0,1]，否则 SAMPLE_TEXTURE2D_SHADOW 深度比较会出错
-		m.m20 = 0.5f * (m.m20 + m.m30);
-		m.m21 = 0.5f * (m.m21 + m.m31);
-		m.m22 = 0.5f * (m.m22 + m.m32);
-		m.m23 = 0.5f * (m.m23 + m.m33);
-		return m;
+		return ConvertToAtlasMatrix(m, offset, scale, scale);
 	}
 
+	//双 scale 版（定向光用：图集是长方形，x/y 两轴的缩放可能不同）
 	Matrix4x4 ConvertToAtlasMatrix(Matrix4x4 m, Vector2 offset, float scaleX, float scaleY)
 	{
 		if (SystemInfo.usesReversedZBuffer) //系统若在用反向ZBuffer，把矩阵Z都取反//传统OpenGL，0近1远是正常的Z，Vulkan/DX，Z是1近0远是reversed Z
@@ -651,7 +643,7 @@ public class Shadows
 		//原因：级联球彼此并不嵌套，相邻球在切片分界处与视锥侧边恰好相切（侧向余量=0），
 		//一旦按世界单位(米级)收缩半径，就会露出一圈"不被任何级联球覆盖"的环带 → GetShadowData 走到
 		//i == _CascadeCount → strength = 0 → 该处阴影整块消失。PCSS 的核越界由 shader 端的
-		//uvClampMin/uvClampMax + maxKernelUV 自己夹在本 tile 内。
+		//uvClampMin/uvClampMax + PCSSFitKernelUV 自己夹在本 tile 内（并按最紧的一轴整体等比缩放，保持核是圆）。
 		float cullMargin = filterSize;
 		//夹到0再平方：负数平方会变成正数，会让该级联把球心附近的片元错误地全部选中
 		cullingSphere.w = Mathf.Max(cullingSphere.w - cullMargin, 0f);
@@ -688,11 +680,12 @@ public class Shadows
 		}
 	}
 
-	static string[] cascadeBlendKeywords =
-	{
-		"_CASCADE_BLEND_SOFT",
-		"_CASCADE_BLEND_DITHER"
-	};
+	//已废弃：级联混合模式改成 uniform(_CascadeBlendMode) 控制，不再用关键字（见 Render() 与 Shadows.hlsl）
+	//static string[] cascadeBlendKeywords =
+	//{
+	//	"_CASCADE_BLEND_SOFT",
+	//	"_CASCADE_BLEND_DITHER"
+	//};
 
 	//PCSS 开关关键字（shader里只对主定向光生效）
 	static string[] pcssKeywords = { "_DIRECTIONAL_PCSS" };

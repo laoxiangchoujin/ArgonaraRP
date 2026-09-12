@@ -18,7 +18,7 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
     //构造函数
     public ArgonaraRenderPipeline(ArgonaraRenderPipelineAsset.CameraRendererType cameraRenderType, CameraBufferSettings cameraBufferSettings, bool useDynamicBatching, bool useGPUInstancing, bool useSRPBatcher,
         bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings, int colorLUTResolution,
-        Shader cameraRendererShader)
+        Shader cameraRendererShader, Shader screenSpaceShadowShader)
     {
         //this.allowHDR = allowHDR;
         this.cameraBufferSettings = cameraBufferSettings;
@@ -31,10 +31,10 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
         this.postFXSettings = postFXSettings;
         this.colorLUTResolution = colorLUTResolution;
 
-        forwardRenderer = new CameraRendererForward(cameraRendererShader);
+        forwardRenderer = new CameraRendererForward(cameraRendererShader, screenSpaceShadowShader);
         renderer = cameraRenderType == ArgonaraRenderPipelineAsset.CameraRendererType.forward
             ? forwardRenderer
-            : new CameraRendererDeferred(cameraRendererShader);
+            : new CameraRendererDeferred(cameraRendererShader, screenSpaceShadowShader);
 
         InitializeForEditor();
     }

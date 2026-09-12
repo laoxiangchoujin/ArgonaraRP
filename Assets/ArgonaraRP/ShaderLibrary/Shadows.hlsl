@@ -26,6 +26,10 @@ TEXTURE2D_SHADOW(_OtherShadowAtlas);
 #define SHADOW_SAMPLER sampler_linear_clamp_compare
 SAMPLER_CMP(SHADOW_SAMPLER);//SAMPLER_CMP被定义为SamplerComparisonState，因为常规的双线性过滤对于深度数据没有意义
 
+//屏幕空间阴影图（第3步）：延迟渲染时由 CameraRendererDeferred 生成并绑定；
+//非延迟路径（前向）没有这张图，用 _ScreenSpaceShadowEnabled 关掉，不会去采样它
+TEXTURE2D(_ScreenSpaceShadowTex);
+
 CBUFFER_START(_CustomShadows)
     int _CascadeCount;
     float4 _CascadeCullingSpheres[MAX_CASCADE_COUNT];//xyz是球心（实际在相机往前一小段距离），w是半径
@@ -37,6 +41,13 @@ CBUFFER_START(_CustomShadows)
     float4 _ShadowAtlasSize;//定向光的图集大小：x=像素宽, y=1/宽, z=像素高, w=1/高（图集可能是长方形）
     float4 _OtherShadowAtlasSize;//其他光源的图集大小：x=正方形边长, y=1/边长（与定向光解耦，各传各的）
     float4 _ShadowDistanceFade;//x是1/最大距离，y是1/距离衰减，z是cascadeFade的一个带平方的因子
+    //级联混合模式：0=Hard 1=Soft 2=Dither。
+    //原来这 3 种是编译变体(_CASCADE_BLEND_SOFT/_CASCADE_BLEND_DITHER)，现在改成运行时 uniform：
+    //它是管线资产里的全局设置（全屏所有像素同一条路），分支开销可忽略，但变体少 3 倍、且切换它不再触发重新编译。
+    int _CascadeBlendMode;
+    //这一趟是否直接采样屏幕空间阴影图（0=否，1=是）。由延迟渲染器在光照Pass前设1、之后设0；
+    //前向渲染不设置它，所以永远是0（前向也没有GBuffer，生不出这张图）
+    float _ScreenSpaceShadowEnabled;
     //PCSS（shader里只对主定向光生效）
     float _DirectionalPCSSSearchRadius;//Blocker Search 世界半径锚点(= 最细级联的N个纹素)，shader里再保证每个级联≥1个自己的纹素
     float _DirectionalPCSSPenumbraRef;//深度差归一化的参考长度(世界，= 最细级联球半径)
@@ -185,6 +196,21 @@ float2 RotatePCSSSample (float2 dir, float2 sinCos)
                   sinCos.x * dir.x + sinCos.y * dir.y);
 }
 
+//把本tile的 uv 核半径夹进可用范围，**整体等比**缩放（形状必须保持不变，否则圆会被压成椭圆）：
+//① 每轴至少1纹素：半径过小会退化成单样本硬边；
+//② 不超过"到本tile边界的距离"：越界样本被逐个clamp回边界会挤成一列纹素、读到别处深度。
+//半径进入这里之前已经分轴换算过（见 worldToUV2），所以等比缩放后在世界空间里仍是正圆。
+float2 PCSSFitKernelUV (float2 radiusUV, float2 roomToTile, float2 texelUV)
+{
+    radiusUV = max(radiusUV, 1e-6);
+    //每轴至少1纹素：取两轴里需要放大的较大倍率，等比放大
+    float grow = max(texelUV.x / radiusUV.x, texelUV.y / radiusUV.y);
+    radiusUV *= max(1.0, grow);
+    //不超过本tile剩余空间：取两轴里最紧的那个倍率，等比缩小
+    float2 fit = roomToTile / max(radiusUV, 1e-6);
+    return radiusUV * min(1.0, min(fit.x, fit.y));
+}
+
 //主定向光的 PCSS：Blocker Search → 半影半径(世界单位) → 变半径 PCF
 //slope = tanθ(由几何法线与光方向得出)，用于随掠射角变化的深度偏移
 float PCSSDirectionalShadow (float3 positionSTS, int tileIndex, float2 sinCos, float slope)
@@ -202,12 +228,15 @@ float PCSSDirectionalShadow (float3 positionSTS, int tileIndex, float2 sinCos, f
     float2 uvClampMax = uvMin + uvSize - halfTexel;
     //采样核必须装得进本tile：否则把越界样本逐个clamp回边界，会让它们挤成一列纹素、读到别处深度
     float2 roomToTile = min(positionSTS.xy - uvClampMin, uvClampMax - positionSTS.xy);
-    float maxKernelUV = max(min(roomToTile.x, roomToTile.y), _ShadowAtlasSize.y);//至少1纹素
+    float2 texelUV = _ShadowAtlasSize.yw;//每轴1个纹素对应的uv长度（图集是长方形，两轴uv长度不同）
 
     float orthoWidth = max(_CascadeData[cascadeIndex].z, 1e-4);//该级联tile覆盖的正交世界宽度
     float depthRange = max(_CascadeData[cascadeIndex].w, 1e-4);//光相机深度范围(far-near)，深度→世界距离用
-    float worldToUV = uvWidth / orthoWidth;//世界长度 → atlas uv 长度
-    float texelWorld = orthoWidth / max(_ShadowAtlasSize.x * uvWidth, 1e-4);//1纹素的世界尺寸
+    //世界长度 → atlas uv 长度：**必须分轴**。tile在像素上是正方形(正交框也是正方形)，但同一个世界半径
+    //换算到uv时两轴长度不同：x轴 1世界单位 = uvWidth/orthoWidth，y轴 = uvHeight/orthoWidth
+    //(1灯8级联时 uvHeight 是 uvWidth 的8倍)。用标量的话核在光空间里会被拉成8:1的椭圆 → 模糊变成有方向的。
+    float2 worldToUV2 = float2(uvWidth, uvHeight) / orthoWidth;
+    float texelWorld = orthoWidth / max(_ShadowAtlasSize.x * uvWidth, 1e-4);//1纹素的世界尺寸（tile在像素上是正方形，两轴相同）
 
     float receiverDist = PCSSDepthToNear(positionSTS.z) * depthRange;//世界距离
     //固定深度偏移：padding 定义为深度范围的比例，所以乘 depthRange
@@ -219,7 +248,7 @@ float PCSSDirectionalShadow (float3 positionSTS, int tileIndex, float2 sinCos, f
     //(否则最粗的几个级联连 1 个纹素都搜不到 → 永远找不到 blocker → 那些级联变成硬阴影)
     //下限取1而不是2：它正比于级联尺寸，取2会让粗级联搜的世界范围反超锚点(粗级联反而更糊)
     float searchWorld = max(_DirectionalPCSSSearchRadius, texelWorld);
-    float searchUV = min(searchWorld * worldToUV, maxKernelUV);//核按剩余空间整体缩小
+    float2 searchUV = PCSSFitKernelUV(searchWorld * worldToUV2, roomToTile, texelUV);//分轴换算 + 整体等比缩放
     //blocker search 的容差要覆盖“搜索半径内接收面自身的深度起伏”，也就是正好等于"核跨过的地形起伏"。
     //这里不加 clamp：加了会让平面自身的邻居被误判成遮挡物(假 blocker)，而且细级联被截得最厉害。
     float biasBlockerWS = baseBiasWS + (texelWorld + searchWorld) * slope * _DirectionalPCSSSlopeBias;
@@ -238,7 +267,7 @@ float PCSSDirectionalShadow (float3 positionSTS, int tileIndex, float2 sinCos, f
     }
 
     //② 半影：深度差用"与级联无关的世界参考长度"归一化，半影上限本身也是世界长度 → 各级联视觉一致
-    float radiusUV = 0.0;
+    float2 radiusUV = 0.0;
     float penumbraWS = 0.0;
     if (blockerCount > 0)
     {
@@ -251,7 +280,7 @@ float PCSSDirectionalShadow (float3 positionSTS, int tileIndex, float2 sinCos, f
         float hitFade = saturate((float)blockerCount / max(1.0, (float)blockerSamples * 0.5));
         //半影上限是世界长度(与级联无关)；级联相关的量只出现在下面这一步“世界→uv”的换算里
         penumbraWS = ratio * _DirectionalPCSSPenumbraMaxWorld * hitFade;//给下面 bias 用的世界核半径
-        radiusUV = pow(penumbraWS * worldToUV, _DirectionalPCSSPenumbraPow);
+        radiusUV = pow(penumbraWS * worldToUV2, _DirectionalPCSSPenumbraPow);
     }
     //下限抬到"PCF 档位本身的核半径"：PCF 是下限、PCSS 在它之上再加半影 → PCSS 永远不会比 PCF 更硬。
     //(不加这个下限时：世界半影在粗级联里往往不足1个纹素 → 半径归零；而 PCSS 的深度是 point 采样，
@@ -262,10 +291,10 @@ float PCSSDirectionalShadow (float3 positionSTS, int tileIndex, float2 sinCos, f
     if (penumbraWS < pcfKernelWS)
     {
         penumbraWS = pcfKernelWS;//bias 跟着同一个核半径走，保持"核大→深度偏移也大"
-        radiusUV = pow(penumbraWS * worldToUV, _DirectionalPCSSPenumbraPow);
+        radiusUV = pow(penumbraWS * worldToUV2, _DirectionalPCSSPenumbraPow);
     }
-    radiusUV = max(radiusUV, _ShadowAtlasSize.y);//至少1纹素，避免半径0退化成单样本硬边
-    radiusUV = min(radiusUV, maxKernelUV);//核按剩余空间整体缩小（替代逐样本clamp）
+    //至少1纹素 + 不超过本tile剩余空间：整体等比缩放（替代逐样本clamp，且不会破坏圆的形状）
+    radiusUV = PCSSFitKernelUV(radiusUV, roomToTile, texelUV);
 
     //③ 变半径 PCF：bias 同样随核半径与斜率变化
     float biasPCFWS = baseBiasWS + (texelWorld + penumbraWS) * slope * _DirectionalPCSSSlopeBias;
@@ -388,6 +417,17 @@ float MixBakedAndRealtimeShadows(ShadowData global, float shadow, int shadowMask
     return lerp(1.0, shadow, strength * global.strength);//这个global.strength就是实时阴影最大距离的衰减，这里没在用baked，就直接在外围衰减到0，上边，用这个值，和baked shadow混合
 }
 
+//世界坐标 → 屏幕UV：和延迟Pass重建世界坐标用的那套翻转互为逆运算（见 CameraRendererPasses.hlsl 的 DeferredLightPassFragment）
+float2 ScreenSpaceShadowUV (float3 positionWS)
+{
+    float4 positionCS = mul(UNITY_MATRIX_VP, float4(positionWS, 1.0));
+    float2 uv = positionCS.xy / positionCS.w * 0.5 + 0.5;
+    #if UNITY_UV_STARTS_AT_TOP
+        uv.y = 1.0 - uv.y;
+    #endif
+    return uv;
+}
+
 //获取直接光的经过阴影处理的剩余光照强度
 float GetDirectionalShadowAttenuation (DirectionalShadowData directional, ShadowData global, Surface surfaceWS) {
     #if !defined(_RECEIVE_SHADOWS)
@@ -404,7 +444,18 @@ float GetDirectionalShadowAttenuation (DirectionalShadowData directional, Shadow
     }
     else//物体与相机距离在最大级联距离之内，并且，如果在最外层衰减强度还没衰减到0，就混合采样实时和烘焙阴影     有阴影且没衰减，就是实时阴影；有阴影有衰减，就是实时与烘焙和混合
     {
-        shadow = GetCascadedShadow(directional, global, surfaceWS);
+        //屏幕空间阴影（只有延迟渲染会开）：直接采样那张图，不再逐像素算PCSS。
+        //只有主光做了屏幕空间阴影图 → 用 tileIndex 判断（主光的tileIndex < 级联数，和其它地方口径一致）。
+        //两条路输出的都是"纯实时"的阴影，所以下面的烘焙混合、强度衰减照旧。
+        if (_ScreenSpaceShadowEnabled > 0.5 && directional.tileIndex < _CascadeCount)
+        {
+            shadow = SAMPLE_TEXTURE2D_LOD(_ScreenSpaceShadowTex, sampler_linear_clamp,
+                ScreenSpaceShadowUV(surfaceWS.position), 0).r;
+        }
+        else
+        {
+            shadow = GetCascadedShadow(directional, global, surfaceWS);
+        }
         //shadow = lerp(1.0, shadow, directional.strength);//经过阴影，和阴影强度处理后的剩余光照强度
         shadow = MixBakedAndRealtimeShadows(global, shadow, directional.shadowMaskChannel, directional.strength);
     }
@@ -459,15 +510,17 @@ ShadowData GetShadowData (Surface surfaceWS)
     {
         data.strength = 0.0;//太远的地方，超出最后一个级联，强度设为0，直接避免采样
     }
-    #if defined(_CASCADE_BLEND_DITHER)
-        else if (data.cascadeBlend < surfaceWS.dither)
-        {
-            i += 1;
-        }
-    #endif
-    #if !defined(_CASCADE_BLEND_SOFT)
-        data.cascadeBlend = 1.0;//如果不使用软混合，则强制为1，避免为此采样两次
-    #endif
+    //级联混合模式（0=Hard 1=Soft 2=Dither）：原来是三个编译变体，现在用 uniform 在运行时分支。
+    //理由见 CBUFFER 里 _CascadeBlendMode 的注释：它是全局设置，分支不产生分歧，但能省下 3 倍的变体。
+    else if (_CascadeBlendMode == 2 && data.cascadeBlend < surfaceWS.dither)//Dither：按屏幕噪声丢掉一部分过渡像素
+    {
+        i += 1;
+    }
+    //Hard(0) 与 Dither(2) 都不做软混合的两次采样（只有 Soft 才保留 0~1 的 blend 因子）→ 强制为1，避免为此采样两次
+    if (_CascadeBlendMode != 1)
+    {
+        data.cascadeBlend = 1.0;
+    }
     data.cascadeIndex = i;
     return data;
 }

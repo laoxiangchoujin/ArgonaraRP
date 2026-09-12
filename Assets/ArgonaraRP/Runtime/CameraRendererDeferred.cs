@@ -9,6 +9,10 @@ public partial class CameraRendererDeferred : CameraRendererBase
     ScriptableRenderContext context;
     Camera camera;
 
+    //本帧是否走屏幕空间阴影：记录的是"本帧到底有没有创建那两张贴图"，Cleanup() 靠它配对释放。
+    //（设置本身不缓存：作为参数传给 Setup()，少一份跨帧状态）
+    bool useScreenSpaceShadow;
+
     private const string bufferName = "Render Camera Deferred";
     private CommandBuffer buffer = new CommandBuffer
     {
@@ -94,7 +98,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
 
         //------------------------------2.相机主进程：准备和绘制---------------------------------
         //2.1准备渲染
-        Setup();
+        Setup(shadowSettings);
         //2.2渲染
         DrawVisibleGeometry(useDynamicBatching, useGPUInsancing, useLightsPerObject, cameraSettings.renderingLayerMask);
         DrawUnsupportedShaders();
@@ -144,6 +148,17 @@ public partial class CameraRendererDeferred : CameraRendererBase
     static int gDepthId = Shader.PropertyToID("_GBufferDepth");
     static int depthTextureId = Shader.PropertyToID("_CameraDepthTexture");
 
+    //屏幕空间阴影图（第3步：屏幕空间PCSS）：把逐像素的PCSS计算单独写成一张屏幕纹理，供光照Pass一次采样
+    static int screenSpaceShadowTexId = Shader.PropertyToID("_ScreenSpaceShadowTex");
+    //blur用的中间纹理：同一张纹理不能在同一次绘制里既读又写，所以横/竖两趟之间来回倒一次
+    static int screenSpaceShadowTexTempBlurId = Shader.PropertyToID("_ScreenSpaceShadowTex_TempBlur");
+    //告诉光照Pass"这一趟要采样屏幕空间阴影图"：只有延迟光照那一趟设1，其余时候是0
+    static int screenSpaceShadowEnabledId = Shader.PropertyToID("_ScreenSpaceShadowEnabled");
+    //告诉shader"当前是前向还是延迟"（1=延迟、0=前向）：用于区分"用途相同但名字不同"的纹理（法线）
+    static int useDeferredRendererId = Shader.PropertyToID("_UseDeferredRenderer");
+    //这张图自己的纹素尺寸（xy = 1/宽、1/高）：blur取邻居要用它，不能用屏幕纹素（半分辨率时两者差2倍）
+    static int screenSpaceShadowTexelSizeId = Shader.PropertyToID("_ScreenSpaceShadowTexelSize");
+
     static int[] gBuffersId =
     {
         Shader.PropertyToID("_GBuffer1"), Shader.PropertyToID("_GBuffer2"),
@@ -161,7 +176,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
     
     
     ///将相机的属性应用于上下文context
-    void Setup()
+    void Setup(ShadowSettings shadowSettings)
     {
         context.SetupCameraProperties(camera); //渲染前设置正确的相机矩阵unity_MatrixVP
         //手动设置 unity_MatrixInvVP（SetupCameraProperties 可能不设它）   GBuffer光照计算需要它来重建世界坐标
@@ -171,8 +186,13 @@ public partial class CameraRendererDeferred : CameraRendererBase
         
         CameraClearFlags flags = camera.clearFlags;//它有4个值，1~4是Skybox,Color,Depth,Nothing，
 
+        //这是延迟渲染器
+        buffer.SetGlobalInt(useDeferredRendererId, 1);
+
         AllocateGBuffers();
-        
+
+        AllocateScreenSpaceShadowTextures(shadowSettings);//屏幕空间阴影图（PCSS第3步）
+
         //用于写入的color缓冲
         buffer.GetTemporaryRT(colorAttachmentId, bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
             useHDR ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default);//是否启用HDR只对后处理堆栈有影响，因此在这决定RT的格式
@@ -231,6 +251,64 @@ public partial class CameraRendererDeferred : CameraRendererBase
         buffer.GetTemporaryRT(gBuffersId[3], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
             RenderTextureFormat.RGB111110Float, RenderTextureReadWrite.Linear); //GT4，xyz是emission + indirect diffuse and Specular(11，11，10)，没有w通道
 
+    }
+
+    //屏幕空间阴影图及其blur临时图：按**半分辨率**创建
+    //R8单通道就够：目前只有主定向光走PCSS。Point采样：blur是手动取邻居，不需要硬件双线性
+    void AllocateScreenSpaceShadowTextures(ShadowSettings shadowSettings)
+    {
+        //开关关掉、或者没配shader → 都不创建这两张图
+        useScreenSpaceShadow = shadowSettings.directional.pcss.screenSpaceBlur && screenSpaceShadowMaterial;
+        if (!useScreenSpaceShadow)
+        {
+            return;
+        }
+
+        //半分辨率：① 像素数变1/4，PCSS那几十次采样和两趟blur都跟着省4倍
+        //          ② 同样的抽头数覆盖的世界范围翻倍（等效半径翻倍，顺带更平滑）
+        //          ③ 光照Pass采样它时是双线性（采样器本来就是linear_clamp），等于顺便做了上采样
+        int width = Mathf.Max(1, bufferSize.x / 2), height = Mathf.Max(1, bufferSize.y / 2);
+        buffer.GetTemporaryRT(screenSpaceShadowTexId, width, height, 0, FilterMode.Point,
+            RenderTextureFormat.R8, RenderTextureReadWrite.Linear);
+        buffer.GetTemporaryRT(screenSpaceShadowTexTempBlurId, width, height, 0, FilterMode.Point,
+            RenderTextureFormat.R8, RenderTextureReadWrite.Linear);
+        //blur要按这张图自己的纹素尺寸取邻居（半分辨率时 = 屏幕纹素的2倍，所以不能沿用_CameraBufferSize）
+        buffer.SetGlobalVector(screenSpaceShadowTexelSizeId, new Vector4(1f / width, 1f / height, width, height));
+    }
+
+    //把主定向光的实时阴影（主光自动走PCSS）算到屏幕空间阴影图，然后横竖各blur一趟，
+    //最终 _ScreenSpaceShadowTex 里就是blur过的结果（临时图_TempBlur只是横竖之间倒手用）。
+    //必须在 CopyDepthAttachments + SetGlobalTexture(GBuffer/深度) 之后调用：第一趟要读 _CameraDepthTexture 和 _GBuffer2。
+    //每趟之间要 SetGlobalTexture：blur那两趟是采样上一趟的结果，靠全局纹理绑定拿到。
+    void DrawScreenSpaceShadow()
+    {
+        //帧调试器是按"命令缓冲区的名字"给每次执行分组的：不在这里改成自己的名字，
+        //这几次命令就会挂在上一段的名字（"GBuffer"）下面，看起来像是嵌在GBuffer层级里。
+        buffer.name = "Screen Space Shadow";
+        buffer.BeginSample("Screen Space Shadow");
+
+        //1.生成：主光的实时阴影 → _ScreenSpaceShadowTex（DontCare：每个像素都会被写满，不需要保留旧内容）
+        buffer.SetRenderTarget(screenSpaceShadowTexId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
+        buffer.DrawProcedural(Matrix4x4.identity, screenSpaceShadowMaterial,
+            (int)ScreenSpaceShadowPass.PCSS, MeshTopology.Triangles, 3);
+        buffer.SetGlobalTexture(screenSpaceShadowTexId, screenSpaceShadowTexId);//给下一趟采样用
+
+        //2.横向blur：_ScreenSpaceShadowTex → _ScreenSpaceShadowTex_TempBlur
+        buffer.SetRenderTarget(screenSpaceShadowTexTempBlurId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
+        buffer.DrawProcedural(Matrix4x4.identity, screenSpaceShadowMaterial,
+            (int)ScreenSpaceShadowPass.BlurHorizontal, MeshTopology.Triangles, 3);
+        buffer.SetGlobalTexture(screenSpaceShadowTexTempBlurId, screenSpaceShadowTexTempBlurId);//给下一趟采样用
+
+        //3.纵向blur：_ScreenSpaceShadowTex_TempBlur → _ScreenSpaceShadowTex（转一圈回来，结果仍在主图上）
+        buffer.SetRenderTarget(screenSpaceShadowTexId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
+        buffer.DrawProcedural(Matrix4x4.identity, screenSpaceShadowMaterial,
+            (int)ScreenSpaceShadowPass.BlurVertical, MeshTopology.Triangles, 3);
+
+        buffer.EndSample("Screen Space Shadow");
+        //设为全局纹理，供后面的光照Pass采样（光照Pass改成采样这张图之前，它只起调试作用）
+        buffer.SetGlobalTexture(screenSpaceShadowTexId, screenSpaceShadowTexId);
+        ExecuteBuffer();
+        buffer.name = bufferName;//恢复本渲染器的缓冲区名，别影响后面命令的分组
     }
     
     void DrawGBuffers()
@@ -295,21 +373,32 @@ public partial class CameraRendererDeferred : CameraRendererBase
 
         if(camera.clearFlags >= CameraClearFlags.Color)
             CopyColorAttachments(); //若相机的ClearFlags为Color，光照计算时候，需要第一次清除的背景色，复制到_CameraColorTexture
+
+        buffer.EndSample("GBuffer");
+        ExecuteBuffer();
         
+        //把主光的实时阴影算进屏幕空间阴影图（PCSS第3步；开关打开时才画，帧调试器里会多出"Screen Space Shadow"这一组）
+        if (useScreenSpaceShadow)
+        {
+            DrawScreenSpaceShadow();
+        }
+
         //恢复渲染目标回colorTexture
         buffer.SetRenderTarget(colorAttachmentId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
             gDepthId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
         ExecuteBuffer();
 
         //为Opaque Lit执行光照计算——全屏三角，读取GBuffer，输出到colorAttachment
-        
-        buffer.DrawProcedural(Matrix4x4.identity, material, 2, MeshTopology.Triangles, 3);
+        //告诉光照Pass：这一趟直接采样屏幕空间阴影图（不再逐像素算PCSS）
+        buffer.SetGlobalFloat(screenSpaceShadowEnabledId, useScreenSpaceShadow ? 1f : 0f);
         buffer.name = "Deferred Lighting";
         buffer.BeginSample("Deferred Lighting");
+        buffer.DrawProcedural(Matrix4x4.identity, material, 2, MeshTopology.Triangles, 3);
         buffer.EndSample("Deferred Lighting");
-        buffer.EndSample("GBuffer");
-        buffer.name = bufferName;
+        //用完立刻关掉：后面的天空盒/透明物体、以及其它相机都不该采样这张图
+        buffer.SetGlobalFloat(screenSpaceShadowEnabledId, 0f);
         ExecuteBuffer();
+        buffer.name = bufferName;
         
         //绘制天空盒
         context.DrawSkybox(camera);//关于它，为什么相机标记为clearFlags为color时看不到天空盒？明明天空盒在默认颜色之后渲染，也不清除天空盒，为啥只能看到颜色？，，，发现clearFlags为color的时候，帧调试器里没有drawSkybox，那就是自动跳过了，大概率是底层C++固定做的判断
@@ -358,6 +447,13 @@ public partial class CameraRendererDeferred : CameraRendererBase
         buffer.ReleaseTemporaryRT(depthTextureId);
         for (int i = 0; i < gBuffersId.Length; i++) 
             buffer.ReleaseTemporaryRT(gBuffersId[i]);
+
+        //清除屏幕空间阴影图及其blur临时图（只有本帧真的创建过才释放）
+        if (useScreenSpaceShadow)
+        {
+            buffer.ReleaseTemporaryRT(screenSpaceShadowTexId);
+            buffer.ReleaseTemporaryRT(screenSpaceShadowTexTempBlurId);
+        }
     }
 
     static bool copyTextureSupported = SystemInfo.copyTextureSupport > CopyTextureSupport.None; 
@@ -409,11 +505,30 @@ public partial class CameraRendererDeferred : CameraRendererBase
 
     Material material;
 
+    //屏幕空间阴影（PCSS第3步）的材质，由 ScreenSpacePCSS.shader 创建
+    Material screenSpaceShadowMaterial;
+
+    //ScreenSpacePCSS.shader 里的 pass 顺序（必须和 shader 里 Pass 的先后一致）
+    enum ScreenSpaceShadowPass
+    {
+        PCSS,
+        BlurHorizontal,
+        BlurVertical
+    }
+
     Texture2D missingTexture;//因为深度纹理是可选的，所以需要一个缺失的纹理，来避免没有深度纹理时的错误
     
-    public CameraRendererDeferred(Shader shader)
+    public CameraRendererDeferred(Shader shader, Shader screenSpaceShadowShader)
     {
         material = CoreUtils.CreateEngineMaterial(shader);//创建一个材质并隐藏，不会保存为资产
+        if (screenSpaceShadowShader)
+        {
+            screenSpaceShadowMaterial = CoreUtils.CreateEngineMaterial(screenSpaceShadowShader);
+        }
+        else//没配shader就退化成"不使用屏幕空间阴影"，而不是报错
+        {
+            Debug.LogWarning("Argonara RP: 管线资产里没有指定 Screen Space Shadow Shader，屏幕空间阴影（PCSS第3步）不可用");
+        }
         missingTexture = new Texture2D(1, 1)
         {
             hideFlags = HideFlags.HideAndDontSave, name = "Missing"
@@ -425,6 +540,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
     public override void Dispose()
     {
         CoreUtils.Destroy(material);
+        CoreUtils.Destroy(screenSpaceShadowMaterial);
         CoreUtils.Destroy(missingTexture);
     }
 

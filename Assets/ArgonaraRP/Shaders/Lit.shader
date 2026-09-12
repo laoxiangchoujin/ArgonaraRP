@@ -84,7 +84,10 @@ Shader "Argonara RP/Lit"
             #pragma shader_feature _PREMULTIPLY_ALPHA
             #pragma multi_compile _ _DIRECTIONAL_PCSS//PCSS 单独一组（不再与 PCF 档位互斥）
             #pragma multi_compile _ _SHADOW_PCF3 _SHADOW_PCF5 _SHADOW_PCF7//定向光与其他光共用同一套 PCF 档位；单个“_”为硬件PCF2x2
-            #pragma multi_compile _ _CASCADE_BLEND_SOFT _CASCADE_BLEND_DITHER
+            //#pragma multi_compile _ _CASCADE_BLEND_SOFT _CASCADE_BLEND_DITHER
+            //↑ 注释掉的原因：级联混合模式(Hard/Soft/Dither)是管线资产里的全局设置，改成运行时 uniform(_CascadeBlendMode = 0/1/2) 了。
+            //  用关键字会让本 pass 的变体 ×3，而且每次在 Inspector 里切换都要重新编译 shader；换成 uniform 后全屏走同一条分支，开销可忽略。
+            //  (C# 在 Shadows.Render() 里上传，shader 在 GetShadowData 里 if 分支)
             #pragma shader_feature _RECEIVE_SHADOWS
             #pragma multi_compile _ LIGHTMAP_ON//不是_LIGHTMAP_ON？
             #pragma multi_compile _ _SHADOW_MASK_ALWAYS _SHADOW_MASK_DISTANCE
@@ -119,6 +122,23 @@ Shader "Argonara RP/Lit"
 			ENDHLSL
         }
 
+		//深度法线prepass：屏幕空间阴影/SSAO用。深度写进当前绑定的深度附件，法线写进法线图
+		Pass
+		{
+			Tags{"LightMode" = "DepthNormals"}
+
+			HLSLPROGRAM
+			#pragma target 3.5
+			#pragma shader_feature _CLIPPING
+			#pragma multi_compile _ LOD_FADE_CROSSFADE
+			#pragma multi_compile_instancing
+			#pragma vertex LitPassVertex
+			#pragma fragment DepthNormalsPassFragment
+			#include "LitPass.hlsl"
+			#include "DepthNormalsPass.hlsl"
+			ENDHLSL
+		}
+
 		Pass
 		{
 			Tags{"LightMode" = "Meta"}
@@ -147,7 +167,7 @@ Shader "Argonara RP/Lit"
             #pragma target 3.5
             
             #pragma shader_feature _CLIPPING
-            #pragma shader_feature _PREMULTIPLY_ALPHA
+            //#pragma shader_feature _PREMULTIPLY_ALPHA
             #pragma multi_compile _ LIGHTMAP_ON//不是_LIGHTMAP_ON？
             #pragma multi_compile _ LOD_FADE_CROSSFADE
             #pragma shader_feature _NORMAL_MAP
