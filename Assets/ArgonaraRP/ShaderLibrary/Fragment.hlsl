@@ -2,6 +2,10 @@
 #define FRAGMENT_INCLUDED
 
 TEXTURE2D(_CameraColorTexture);
+//按纹理命名的那套采样器：状态取自纹理自己（颜色快照带 mip 时建的是 Trilinear）⇒ LOD 采样会在相邻两级 mip
+//之间插值，不会出现"取整到最近一级"的突变（sampler_linear_clamp 这类静态命名采样器的 mip 过滤是"点"的）。
+//SSR 采反射色用它（那边的 lod 是粗糙度算出来的，是小数）。
+SAMPLER(sampler_CameraColorTexture);
 //既然是片元需要深度那么在此采样深度图
 TEXTURE2D(_CameraDepthTexture);
 

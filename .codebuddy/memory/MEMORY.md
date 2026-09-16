@@ -15,6 +15,12 @@
 - **不要什么都往 memory 里写**：只记有跨会话价值的结论/约定，别把每轮的清单细节、分析过程搬进去（用户明确提过）。
 - **不要写自定义 `PropertyDrawer`**（加过两次都被否："改的太多""别加 drawer 了"）。要在 Inspector 里分组，就用 `[System.Serializable]` 嵌套结构体；
   字段归类重命名时**必须同步改管线资产 `.asset` 里的键**（否则用户调好的值会被重置）。
+- **渲染路径的定位（2026-09-15 用户定调）**：**延迟 = 全功能主路径**，屏幕空间类效果（SSR 等）只在这里做；
+  **前向 = 基础光照兜底路径**（MSAA/透明/VR/移动），**不要求与延迟特效对等**。用户明确表示"不想继续为前向补 SSR 细节（粗糙度→mip）"。
+  ⇒ 以后不要主动提议"让前向也支持某屏幕空间效果"，除非他问；前向 SSR 保持现状（清晰档 mip0）即可。
+  （与业界一致：PPSv2 / URP / HDRP 的 SSR 都是 **deferred-only**。）
+  前向 SSR 的完整差异/未做点/注意事项清单在 `2026-09-15.md` 的「前向 SSR 相对延迟的差异」一节
+  （要点：**晚一帧** / **无粗糙度→mip（永远 mip0）** / **无 composite、只对走了这套 Lit 的物体生效** / **多一趟 depth-normal prepass、法线精度低** / **两张持久 RT 双缓冲 + 两个"有没有图"开关每帧必须显式设**）。
 
 ## 技术约定（本项目）
 - 阴影里凡是"**半径 / 模糊 / 偏移**"一律用**世界单位（米）**；级联相关的量**只允许**出现在"米 → 本級联纹素/UV"的换算那一步。
@@ -27,3 +33,18 @@
   阴影滤波档位 `ShadowSettings.filter` 已**提到顶层统一控制**（定向光 + 其他光共用一个档位）。
 - PCSS 的两个"锚点"参数（`pcssSearchAnchorTexels` / `pcssPenumbraAnchorTexels`）单位是"**最细级联的纹素数**"，
   所以**必须随 tileSize 成比例**（512→约 10/20，1024→约 20/40）；换算后的世界长度才是真正生效的量。
+
+## 渲染层（Rendering Layer）约定（2026-09-15 立）
+- 本管线**只支持 8 个渲染层**、**掩码方案**（一个物体/一盏灯可同时在多层，判定 = 位掩码按位与）。
+  单一来源：`Runtime/RenderingLayers.cs`（`Count=8`/`Limit=0xFF`/`DefaultNames`）＋ `ShaderLibrary/Surface.hlsl` 的
+  `RENDERING_LAYER_COUNT/MASK` + `EncodeRenderingLayers/DecodeRenderingLayers`。**改层数要同步改这两处。**
+- **延迟下逐物体的 `unity_RenderingLayer` 无效**（光照 pass 是全屏 `DrawProcedural`，那是逐 draw 常量且来源不可靠，
+  会被前面的全屏 pass 写成 0 ⇒ `RenderingLayersOverlap` 把每盏灯都挡掉 ⇒ **全黑**；2026-09-15 踩过）。
+  所以物体的层掩码**写进 GBuffer3(RMO) 的 A 通道**（8 位：`mask/255` 存、`(uint)(a*255+0.5)` 读；GT3 是 ARGB32+Linear，无损），
+  延迟光照 pass 读回来。**前向不需要**（跟着真实物体绘制，`unity_RenderingLayer` 本来就有值）。
+- 编辑器层数上限靠 **`ArgonaraRenderPipelineAsset.renderingLayerMaskNames`**（返回 8 个名字）：Unity 自带的物体/灯光
+  Rendering Layer Mask 下拉框、以及本管线相机掩码字段（`RenderingLayerMaskDrawer`）都按这个列表长度决定显示几项。
+- Unity 两家做法（已核对源码）：**URP** 渲染层放**独立 GBuffer slice**（`GBufferRenderingLayersIndex=5`，格式按层数 R8/R16/R32），
+  灯侧逐灯 `_LightLayerMask` uniform，判定在像素着色器；全屏光照 pass 是**逐灯**不是逐层；stencil 只放材质位 + `StencilLight`。
+  **HDRP** 渲染层放 GBuffer 的 A 通道（Light Layer），stencil 被 unlit/deferred/SSS/SSR/decal/motion vector 占满。
+  ⇒ **两家都不用 stencil 存渲染层**（"URP 用 stencil 存渲染层"曾是错误说法，已作废）。

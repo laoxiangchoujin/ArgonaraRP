@@ -67,7 +67,11 @@ public class ShadowSettings
             [Range(0.75f, 1.5f)] public float penumbraPow;//半影半径的幂次修正，1=原始相似三角形结果
             [Range(0f, 0.3f)] public float padding;//基础深度偏移(占光相机深度范围的比例)
             [Range(0f, 4f)] public float slopeBias;//深度偏移随斜率(掠射角)与核半径的强度，1=AKG式
-            [Range(0f, 4f)] public float normalBias;//沿几何法线偏移着色点(单位:1.414×阴影纹素世界尺寸；填主光的Shadow Normal Bias即可与PCF对齐)
+            [Range(0f, 4f)] public float normalBias;
+
+            //屏幕空间PCSS那一套（半影mask + 横竖模糊 + PCSS生成）用的shader：ScreenSpacePCSS.shader。
+            //放在这里而不是管线asset顶层：它只服务于PCSS这一个特性，跟着PCSS的设置一起走（SSR那边同理）
+            public Shader shader;//沿几何法线偏移着色点(单位:1.414×阴影纹素世界尺寸；填主光的Shadow Normal Bias即可与PCF对齐)
         }
         public Pcss pcss;
     }

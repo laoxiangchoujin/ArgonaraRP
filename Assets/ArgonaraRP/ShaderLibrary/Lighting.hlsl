@@ -56,10 +56,10 @@ float3 GetLightingDeferred (Surface surfaceWS, BRDF brdf) {
     for (int i=0;i<GetDirectionalLightCount();i++)
     {
         Light light = GetDirectionalLight(i, surfaceWS, shadowData);
-        if (RenderingLayersOverlap(surfaceWS, light))
-        {
+        //if (RenderingLayersOverlap(surfaceWS, light)).
+        //{
             color += GetLighting(surfaceWS, brdf, light);
-        }
+        //}
     }
     #if defined(_LIGHTS_PER_OBJECT)//点光源、聚光灯的逐物体光照
     for (int j = 0; j < min(unity_LightData.y, 8); j++) {//unity_LightData.y是影响本物体的点光/聚光数量，unity设定最大是八个光索引，so单物体最多循环8次

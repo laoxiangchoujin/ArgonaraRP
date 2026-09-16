@@ -19,6 +19,8 @@ MonoBehaviour:
     copyColorReflection: 0
     copyDepth: 1
     copyDepthReflection: 0
+    copyColorMips: 1
+    copyColorMipCount: 4
     renderScale: 1
     bicubicRescaling: 1
   useDynamicBatching: 1
@@ -26,11 +28,11 @@ MonoBehaviour:
   useSRPBatcher: 1
   useLightsPerObject: 1
   shadows:
-    maxDistance: 800
+    maxDistance: 200
     distanceFade: 0.1
     filter: 0
     directional:
-      tileSize: 512
+      tileSize: 1024
       cascadeCount: 8
       cascadeRatios:
       - 0.0078125
@@ -46,19 +48,34 @@ MonoBehaviour:
       pcss:
         enabled: 1
         screenSpaceBlur: 1
-        searchTexels: 10
-        filterTexels: 20
+        searchTexels: 20
+        filterTexels: 16
         blockerSamples: 32
         samples: 32
         penumbraPow: 1
         padding: 0
         slopeBias: 0.6
         normalBias: 0.6
+        shader: {fileID: 4800000, guid: 04c301ab9fbc0d744872a0253b0bb22f, type: 3}
     other:
       atlasSize: 1024
-  postFXSettings: {fileID: 0}
+  ssr:
+    enabled: 1
+    totalRayLength: 32
+    pixelStride: 2
+    stepCountLimit: 64
+    nearStepBoldenRange: 100
+    pixelThickness: 0.15
+    backRayFadeWidth: 0.2
+    screenEdgeFadeStart: 0.97
+    marchFadeStrength: 0.8
+    intensity: 1
+    fireflySuppression: 1
+    fireflyStrength: 0.2
+    roughnessMipScale: 3
+    roughnessMipBias: 0
+    shader: {fileID: 4800000, guid: ce2eb3678f384034c8aef18a989cca1a, type: 3}
+  postFXSettings: {fileID: 11400000, guid: 80dc71d8e864e284581e4ac8f8a23efe, type: 2}
   colorLUTResolution: 32
   cameraRendererShader: {fileID: 4800000, guid: 01c9380ab1418fd44a02e56b2677bee5,
-    type: 3}
-  screenSpaceShadowShader: {fileID: 4800000, guid: 04c301ab9fbc0d744872a0253b0bb22f,
     type: 3}

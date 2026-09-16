@@ -95,6 +95,11 @@ float4 LitPassFragment(Varyings input) : SV_Target
     #endif
     
     GI gi = GetGI(GI_FRAGMENT_DATA(input), surface, brdf);
+    //前向的SSR：采反射图（前向渲染器在画完本帧物体+拷贝之后才追，所以本帧拿到的是**上一帧**的结果）
+    //⚠️ 只有前向这条覆盖 gi.specular：延迟那条（写GT4）不能在这采 —— 它的间接高光要么写在GT4里、
+    //   要么交给"SSR生成之后的全屏合成pass"，口径由 _UseScreenSpaceReflectionInDeferred 管
+    //   屏幕UV用 config.fragment.screenUV（和折射采 _CameraColorTexture 是同一套屏幕空间）
+    gi.specular = SampleEnvironment(surface, brdf, config.fragment.screenUV);
     float3 color = GetLightingForward(surface, brdf, gi);
     color += GetEmission(config);
     
@@ -112,6 +117,11 @@ float4 LitPassFragment(Varyings input) : SV_Target
     //
      //return float4(surface.viewDirection, 1.0);
      //return float4(gi.specular, 1.0);
+    
+    // float4 dbg = SAMPLE_TEXTURE2D(_SSRTex, sampler_linear_clamp, config.fragment.screenUV);
+    // //return float4(dbg.rgb, 1.0);       // ① 看"Lit 到底采到了什么"
+    //  return float4(dbg.a, 0, 0, 1);  // ② 再换这行看可信度
+
     
     return float4(color, GetFinalAlpha(surface.alpha));//不透明物体强制Alpha=1，保证相机叠加时Alpha值正确
 }
@@ -164,7 +174,19 @@ void LitPassFragmentGBuffer(Varyings input,
     
     float3 emission = GetEmission(config);
     
-    float3 indirectColor = IndirectBRDF(surfaceWS, brdf, gi.diffuse, gi.specular);
+    //间接光写进 GT4，两种模式（_UseScreenSpaceReflectionInDeferred，延迟渲染器每帧上传）：
+    //  0 = 老路：漫反射 + 高光都写进去，光照Pass整体加上去就完事；
+    //  1 = 开了延迟的SSR：**只写漫反射**，间接高光留给"SSR生成之后的那趟全屏合成pass"去补
+    //      （高光要用当帧的SSR图当反射源，而GBuffer这一趟在SSR之前，所以只能拆开）
+    float3 indirectColor;
+    if (_UseScreenSpaceReflectionInDeferred > 0)
+    {
+        indirectColor = IndirectDiffuse(surfaceWS, brdf, gi.diffuse);
+    }
+    else
+    {
+        indirectColor = IndirectBRDF(surfaceWS, brdf, gi.diffuse, gi.specular);
+    }
         //SampleLightmap(GI_FRAGMENT_DATA(input)) + SampleLightProbe(input.positionWS, normalWS);
     
     float shadingModelID4_null4 = ((uint)1 << 4)/255.0;

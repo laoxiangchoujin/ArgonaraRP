@@ -125,6 +125,11 @@ float4 DeferredLightPassFragment(Varyings input) : SV_Target
     
     
         color = GetLightingDeferred(surface, brdf);
+
+        //return float4(surface.albedo, 1);
+        //return float4(surface.normal * 0.5 + 0.5, 1);
+        //return float4((surface.position * 0.05), 1);
+        //color = GetDirectionalLightCount();
         color += emission_indirectColor;
     
         return float4(color, 1.0);

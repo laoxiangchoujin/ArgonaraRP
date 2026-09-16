@@ -11,6 +11,8 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
     
     ShadowSettings shadowSettings;
 
+    SSRSettings ssrSettings;
+
     PostFXSettings postFXSettings;
     
     int colorLUTResolution;
@@ -18,7 +20,7 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
     //构造函数
     public ArgonaraRenderPipeline(ArgonaraRenderPipelineAsset.CameraRendererType cameraRenderType, CameraBufferSettings cameraBufferSettings, bool useDynamicBatching, bool useGPUInstancing, bool useSRPBatcher,
         bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings, int colorLUTResolution,
-        Shader cameraRendererShader, Shader screenSpaceShadowShader)
+        Shader cameraRendererShader, SSRSettings ssrSettings)
     {
         //this.allowHDR = allowHDR;
         this.cameraBufferSettings = cameraBufferSettings;
@@ -28,8 +30,12 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
         GraphicsSettings.lightsUseLinearIntensity = true;//确保灯光颜色都是线性空间
         this.useLightsPerObject = useLightsPerObject;
         this.shadowSettings = shadowSettings;
+        this.ssrSettings = ssrSettings;
         this.postFXSettings = postFXSettings;
         this.colorLUTResolution = colorLUTResolution;
+
+        //屏幕空间PCSS的shader引用现在跟着PCSS的设置走（原来在管线asset顶层）
+        Shader screenSpaceShadowShader = shadowSettings != null ? shadowSettings.directional.pcss.shader : null;
 
         forwardRenderer = new CameraRendererForward(cameraRendererShader, screenSpaceShadowShader);
         renderer = cameraRenderType == ArgonaraRenderPipelineAsset.CameraRendererType.forward
@@ -51,7 +57,7 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
                 : renderer;
             r.Render(context, camera, cameraBufferSettings,
                 useDynamicBatching, useGPUInstancing, useLightsPerObject, 
-                shadowSettings, postFXSettings, colorLUTResolution);
+                shadowSettings, ssrSettings, postFXSettings, colorLUTResolution);
         }
     }
 

@@ -26,6 +26,12 @@ public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPip
     
     //给调试代码等提供只读访问（如 Scene 视图里的级联球线框需要现算，直接从当前资产取设置）
     public ShadowSettings Shadows => shadows;
+
+    //屏幕空间反射（SSR）：目前只有总开关，是否走SSR由它决定
+    [SerializeField]
+    SSRSettings ssr = default;
+
+    public SSRSettings SSR => ssr;
     
     [SerializeField]
     PostFXSettings postFXSettings = default;
@@ -38,13 +44,12 @@ public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPip
     [SerializeField] 
     Shader cameraRendererShader = default;
 
-    //屏幕空间阴影（PCSS第3步）用的shader：走"生成屏幕空间阴影图 + 两趟blur"的路线时要用
-    [SerializeField]
-    Shader screenSpaceShadowShader = default;
-    
+    //注意：屏幕空间PCSS的shader引用已挪到 ShadowSettings.directional.pcss.shader，
+    //SSR的shader引用在 SSRSettings 里 —— 各自跟着自己的设置走
+
     protected override RenderPipeline CreatePipeline()
     {
         return new ArgonaraRenderPipeline(cameraRendererType, cameraBuffer, useDynamicBatching, useGPUInstancing, useSRPBatcher, 
-            useLightsPerObject, shadows, postFXSettings, (int)colorLUTResolution, cameraRendererShader, screenSpaceShadowShader);
+            useLightsPerObject, shadows, postFXSettings, (int)colorLUTResolution, cameraRendererShader, ssr);
     }
 }
