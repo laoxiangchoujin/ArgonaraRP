@@ -60,7 +60,7 @@ MonoBehaviour:
     other:
       atlasSize: 1024
   ssr:
-    enabled: 1
+    enabled: 0
     totalRayLength: 32
     pixelStride: 2
     stepCountLimit: 64

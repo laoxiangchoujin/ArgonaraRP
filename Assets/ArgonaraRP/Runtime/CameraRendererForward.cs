@@ -41,7 +41,7 @@ public partial class CameraRendererForward : CameraRendererBase
         bool useDynamicBatching, bool useGPUInsancing, bool useLightsPerObject,
         ShadowSettings shadowSettings, SSRSettings ssrSettings, PostFXSettings postFXSettings, int colorLUTResolution)
     {
-        //ssrSettings：前向渲染器的SSR还没做（先后做延迟），这里先只收下参数不处理
+        //ssrSettings：转给 Setup（那边交给 ScreenSpaceReflection 处理：判定/建图/绑 _SSRTex/传参）
         this.context = context;
         this.camera = camera;
 
@@ -58,6 +58,15 @@ public partial class CameraRendererForward : CameraRendererBase
         {
             useColorTexture = bufferSettings.copyColor && cameraSettings.copyColor;
             useDepthTexture = bufferSettings.copyDepth && cameraSettings.copyDepth;
+        }
+
+        //SSR 的 trace 要用"不透明+天空盒"的颜色快照和深度图（ScreenSpaceReflection.hlsl 里直接采
+        //_CameraColorTexture / _CameraDepthTexture）⇒ 它一旦要走，这两份拷贝就必须打开。
+        //否则 _SSRTex 会去采 Setup 里绑的 missingTexture 占位灰图（看着像"开了SSR却坏了"）。
+        if (ScreenSpaceReflection.ShouldRender(ssrSettings, camera))
+        {
+            useColorTexture = true;
+            useDepthTexture = true;
         }
         
         if (cameraSettings.overridePostFX)
@@ -175,34 +184,12 @@ public partial class CameraRendererForward : CameraRendererBase
     static int srcBlendId = Shader.PropertyToID("_CameraSrcBlend");
     static int dstBlendId = Shader.PropertyToID("_CameraDstBlend");
 
-    //=========================== SSR（屏幕空间反射，前向版）===========================
-    //前向只能用**上一帧**的结果：反射源得是"不透明+天空盒"的本帧快照，而本帧物体在拷贝之前就画完了。
-    //所以这两张图必须**跨帧持久**，而且**双缓冲**：本帧读上一帧那张、写另一张，帧末交换。
-    //（延迟那边是同帧的，图每帧临时就够 —— 两边图的生命周期不同，别互相套用）
-    static int ssrTexId = Shader.PropertyToID("_SSRTex");//名字和延迟/shader共用同一套，shader 才能复用
-    static int ssrTexTempBlurId = Shader.PropertyToID("_SSRTex_TempBlur");
-    //反射图的纹素尺寸：xy = 1/宽、1/高（zw = 宽、高），blur 取邻居要用
-    static int ssrTexelSizeId = Shader.PropertyToID("_SSRTexelSize");
-    //两张持久的反射图（轮换使用）；blur 的倒手图只在一帧内用，仍走每帧临时图
-    RenderTexture[] ssrTextures = new RenderTexture[2];
-    //上一次是"按什么尺寸/HDR开关"建的图。⚠️ 不能拿 rt.format 去比"参数变了没"（见 AllocateSSRTextures 里的注释）
-    int ssrTextureWidth, ssrTextureHeight;
-    bool ssrTextureHDR;
-    int ssrReadIndex;//本帧"读"的那张（= 上一帧追出来的结果）；另一张（1-ssrReadIndex）是本帧要写的
-    //本帧是否走SSR：和屏幕空间阴影一个套路 —— Setup 里定下，Cleanup 用同一个值配对
+    //=========================== SSR（屏幕空间反射）===========================
+    //本帧走不走 SSR 由**这里**判定：公共部分用 ScreenSpaceReflection.ShouldRender；
+    //前向的附加需求（颜色快照 + 深度图）在 Render 开头就按 SSR 强制打开了 ⇒ 判定不再有额外条件
+    //建图/绑 _SSRTex/那三趟绘制/释放都在 ScreenSpaceReflection 里（两个渲染器共用一份实现）
+    ScreenSpaceReflection ssr = new ScreenSpaceReflection();
     bool useSSR;
-    SSRSettings ssrSettings;
-    //告诉shader"本帧有可用的SSR图"（前向版：延迟那个是 _UseScreenSpaceReflectionInDeferred，两者各设各的）
-    static int useScreenSpaceReflectionInForwardId = Shader.PropertyToID("_UseScreenSpaceReflectionInForward");
-
-    //ScreenSpaceReflection.shader 里的 pass 顺序（**必须和 shader 里 Pass 的先后完全一致**）
-    enum SSRPass
-    {
-        Trace,          //0：追踪
-        BlurHorizontal, //1：横blur
-        BlurVertical,   //2：竖blur
-        //3：间接高光合成 —— **前向不用它**：前向不做"拆间接高光+事后合成"，而是让 Lit 直接采"上一帧"的反射图
-    }
 
     private static int bufferSizeId = Shader.PropertyToID("_CameraBufferSize");//因为unity默认提供的_ScreenParams数值不会随我们的渲染缩放调整，需要自己传值替代
     
@@ -222,13 +209,14 @@ public partial class CameraRendererForward : CameraRendererBase
         useScreenSpaceShadow = shadowSettings.directional.pcss.enabled &&
                                shadowSettings.directional.pcss.screenSpaceBlur && screenSpaceShadowMaterial;
 
-        //本帧是否走SSR：总开关 + 配了shader才走（material 由 SSRSettings 惰性创建，和延迟共用同一个）
-        //  + 反射相机（探针）不跑：cubemap 的投影下"反射方向"本来就没意义，而且探针每帧要渲染6次，白跑三趟
-        //  + 必须有颜色快照：没有它 _CameraColorTexture 是 1×1 灰的空纹理 ⇒ 反射源是灰的（看着像"开了SSR却坏了"）
-        this.ssrSettings = ssrSettings;
-        useSSR = ssrSettings != null && ssrSettings.enabled && ssrSettings.Material != null
-                 && camera.cameraType != CameraType.Reflection
-                 && useColorTexture;
+        //本帧走不走 SSR：公共判定（总开关 / Material / 排除反射相机）。
+        //前向没有附加条件了：SSR 依赖的"颜色快照 + 深度图"在 Render 开头已经按 SSR 强制打开（见那边）
+        useSSR = ScreenSpaceReflection.ShouldRender(ssrSettings, camera);
+
+        //交给 SSR 自己（**每帧都调**，真/假两种走向都在里面）：建(重建)两张持久图 + 绑 _SSRTex(上一帧那张)
+        //+ 上传调参；关掉那帧则是释放两张持久图 + 绑 1×1 纯黑（不执行的话本帧会采到上一帧那张不该再用的图）。
+        //⚠️ 必须放在下面"设成颜色附件+深度"之前：建图那几帧里会清图、把渲染目标设成 SSR 图。
+        ssr.Setup(buffer, ssrSettings, useSSR, bufferSize.x, bufferSize.y, useHDR);
 
         CameraClearFlags flags = camera.clearFlags;//它有4个值，1~4是Skybox,Color,Depth,Nothing，
 
@@ -263,24 +251,6 @@ public partial class CameraRendererForward : CameraRendererBase
 
         //屏幕空间阴影（第3步）的两张半分辨率图：开关关掉就不创建
         AllocateScreenSpaceShadowTextures();
-
-        //SSR 的两张反射图（持久，跨帧）+ 本帧的倒手图：开关关掉就什么都不留
-        AllocateSSRTextures();
-
-        //每帧都要把 _SSRTex 绑成"读"的那张（= 上一帧追出来的结果，本帧的 Lit 会采它）。
-        //没走 SSR 时必须绑空纹理：否则会采到上一帧留下的、已经不可用的图
-        if (useSSR)
-        {
-            buffer.SetGlobalTexture(ssrTexId, ssrTextures[ssrReadIndex]);
-            CameraRendererBase.SetSSRParameters(buffer, ssrSettings);//追踪/降噪调参（和延迟同一套 uniform）
-        }
-        else
-        {
-            buffer.SetGlobalTexture(ssrTexId, missingTexture);
-        }
-        //前向版的"有没有SSR图"：**每帧都要设**（关掉时必须是0，否则上一帧/上一台相机留下的1
-        //会让 Lit 去采一张空纹理 —— 见 GI.hlsl 的三参 SampleEnvironment）
-        buffer.SetGlobalInt(useScreenSpaceReflectionInForwardId, useSSR ? 1 : 0);
 
         buffer.ClearRenderTarget(
             flags < CameraClearFlags.Nothing, //除了清除标识为nothing以外都要清除深度缓冲
@@ -323,74 +293,10 @@ public partial class CameraRendererForward : CameraRendererBase
             new Vector4(1f / width, 1f / height, width, height));
     }
 
-    //SSR 的三张图：两张反射图（**跨帧持久**，双缓冲轮换）+ 一张本帧的 blur 倒手图（每帧临时）。
-    //为什么持久图不能用 GetTemporaryRT：它每帧都会被回收，而前向要用"上一帧"的结果。
-    //开关关掉 → 把持久图释放掉（省显存）；尺寸/HDR开关变了 → 重建。
-    //⚠️ 刚建出来的图内容是**未定义的** ⇒ 接上 trace 之后，第一帧别直接把它当"上一帧结果"用（要么先清一次，要么跳过那一帧）。
-    void AllocateSSRTextures()
-    {
-        if (!useSSR)
-        {
-            ReleaseSSRTextures();
-            return;
-        }
-
-        int width = Mathf.Max(1, bufferSize.x / 2), height = Mathf.Max(1, bufferSize.y / 2);
-        RenderTextureFormat format = useHDR ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default;
-
-        //⚠️ 判断"参数变了没"**不能**拿 rt.format 去比：请求 Default / DefaultHDR 时，RenderTexture.format
-        //   可能返回平台**解析后的具体格式**（和请求值不相等）⇒ 每帧都判定"变了" ⇒ 每帧销毁重建 ⇒
-        //   两张图永远是空的（Lit 采到全 0，而 trace 那几趟当帧写、看着正常）。所以自己记住上次按什么建的。
-        bool needRebuild = ssrTextures[0] == null ||
-                           ssrTextureWidth != width || ssrTextureHeight != height || ssrTextureHDR != useHDR;
-        if (needRebuild)
-        {
-            ReleaseSSRTextures();//两张一起换，保证双缓冲从同一起点开始
-            ssrTextureWidth = width;
-            ssrTextureHeight = height;
-            ssrTextureHDR = useHDR;
-            for (int i = 0; i < ssrTextures.Length; i++)
-            {
-                ssrTextures[i] = new RenderTexture(width, height, 0, format, RenderTextureReadWrite.Linear)
-                {
-                    name = "_SSRTex" + i,
-                    hideFlags = HideFlags.HideAndDontSave,
-                    filterMode = FilterMode.Bilinear,//追踪结果是"清晰"那张（模糊由后面两趟blur和mip负责）
-                    wrapMode = TextureWrapMode.Clamp,
-                    useMipMap = false,
-                    autoGenerateMips = false,
-                };
-                ssrTextures[i].Create();
-                //新建的图内容未定义：清一次，免得第一帧（或重建后的那一帧）把垃圾当成"上一帧的结果"
-                buffer.SetRenderTarget(ssrTextures[i], RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
-                buffer.ClearRenderTarget(false, true, Color.clear);
-            }
-            //清完把渲染目标恢复回来（Setup 里刚设成"颜色附件+深度"，紧接着要画不透明物）
-            buffer.SetRenderTarget(colorAttachmentId, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store,
-                depthAttachmentId, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store);
-        }
-        buffer.SetGlobalVector(ssrTexelSizeId, new Vector4(1f / width, 1f / height, width, height));
-
-        //倒手图：同一张纹理不能在同一趟绘制里既读又写，横/竖两趟之间来回倒一次（半分辨率）
-        buffer.GetTemporaryRT(ssrTexTempBlurId, width, height, 0, FilterMode.Bilinear, format);
-    }
-
-    //释放两张持久的反射图（开关关掉时、以及 Dispose 时）
-    void ReleaseSSRTextures()
-    {
-        for (int i = 0; i < ssrTextures.Length; i++)
-        {
-            if (ssrTextures[i] != null)
-            {
-                ssrTextures[i].Release();
-                CoreUtils.Destroy(ssrTextures[i]);
-                ssrTextures[i] = null;
-            }
-        }
-    }
-
-    //深度法线prepass：法线写进 _CameraNormalsTexture，深度沿用"主pass要用的同一个深度附件"（用Load，别重复清）。
-    //谁需要它：① 屏幕空间阴影(PCSS)要半影带里的几何法线；② SSR 要背面剔除 / 反射方向 / 命中点法线。
+    //深度法线prepass：法线（**着色法线**，与延迟 GBuffer2 同口径）写进 _CameraNormalsTexture，
+    //深度沿用"主pass要用的同一个深度附件"（用Load，别重复清）。
+    //谁需要它：① PCSS（两趟 blur 的法线保边项 + 给"几何法线重构"当翻正参考）；② SSR（接收面反射方向 / 命中点法线）。
+    //（阴影 bias 要的**几何法线**不来自这张图：全屏 pass 用 ScreenSpaceGeometricNormal 从深度重构。）
     //⇒ 两台消费者各自调用它（门由调用方出），它自己不掺和任何一方的后续步骤。
     void DrawDepthNormalsPrepass(bool useDynamicBatching, bool useGPUInsancing, int renderingLayerMask)
     {
@@ -542,7 +448,8 @@ public partial class CameraRendererForward : CameraRendererBase
             DrawScreenSpaceShadow();
         }
 
-        //=== 所有物体的实际绘制（opaque + 天空盒 + transparent）：单独打一个组 ===
+        //=== 不透明几何 + 天空盒：单独打一个组 ===
+        //（拷贝颜色、SSR、透明物体都在它之后各自开组：它们和它是**平级**的，不并进来）
         buffer.name = "Draw Geometry";
         buffer.BeginSample("Draw Geometry");
         //先执行一下：DrawRenderers 是 context 调用、会立刻执行，得让上面的 BeginSample 先生效，它才会落进这个组
@@ -582,85 +489,48 @@ public partial class CameraRendererForward : CameraRendererBase
         // cmd.Release();
         context.DrawSkybox(camera);//关于它，为什么相机标记为clearFlags为color时看不到天空盒？明明天空盒在默认颜色之后渲染，也不清除天空盒，为啥只能看到颜色？，，，发现clearFlags为color的时候，帧调试器里没有drawSkybox，那就是自动跳过了，大概率是底层C++固定做的判断
         
+        //几何那个组到此为止（拷贝和 SSR 都不属于"画几何"，从这往后都是平级的组）
+        buffer.EndSample("Draw Geometry");
+        ExecuteBuffer();
+        buffer.name = bufferName;
+
+        //=== 拷贝颜色/深度（必须放在 SSR 之前：SSR 要采这份"不透明+天空盒"的快照）===
         if (useColorTexture || useDepthTexture)
         {
-            CopyAttachments();
+            CopyAttachments();//内部自带 ExecuteBuffer
         }
 
-        //=== SSR（屏幕空间反射，前向版）===
+        //=== SSR（屏幕空间反射）===
         //必须在本帧"不透明+天空盒"的快照（CopyAttachments：带mip的颜色 + 深度 + 法线）之后、画透明物之前：
-        //① 本帧的反射源现在才齐；② 透明物（水面等）采的也是"上一帧"那张图。
+        //① 本帧的反射源现在才齐；② 此刻还没画透明物，反射里照不到水面自己。
         //⚠️ 依赖：颜色快照（useColorTexture）和深度/法线得有 —— trace 要读它们。
+        //这三趟写出来的是"本帧要写的那张"（下一帧才被不透明物体消费）；画完 _SSRTex 绑的是当帧这张，
+        //所以下面画的**透明物**拿到的是当帧的反射（不透明物体拿到的是上一帧那张）
         if (useSSR)
         {
-            DrawSSR();
+            ssr.Draw(buffer, colorAttachmentId, depthAttachmentId);//三趟（附件 id 由各渲染器给）
+            ExecuteBuffer();//让上面那些 RT/全局绑定立刻生效：紧接着要画透明物了
+            buffer.name = bufferName;//恢复缓冲区名（那几趟把它改成了 "Screen Space SSR"）
         }
 
+        //=== 透明物体：自己的组（同样不并进上面那个几何组）===
         //先绘制opaque，再绘制skybox，然后绘制transparent   避免skybox盖住半透物体
         //trans的排序用CommonTransparent，从后往前绘制，和opaque的前往后相反
         //trans咋排序对性能没影响+必须从后往前才有可能正确混合。
         //但如此不能保证正确混合，因为排序是基于对象的位置，针对每个对象排序的。交叉和大的trans物体还是可能错误排序，或许可以把大物体切割成多个小物体来尝试接近，，，能这样干吗？
+        buffer.name = "Draw Transparent";
+        buffer.BeginSample("Draw Transparent");
+        ExecuteBuffer();
         sortingSettings.criteria = SortingCriteria.CommonTransparent;
         drawingSettings.sortingSettings = sortingSettings;
         filteringSettings.renderQueueRange = RenderQueueRange.transparent;
         context.DrawRenderers(cullingResults,ref drawingSettings, ref filteringSettings);
 
-        //屏幕空间阴影图用完了就关掉，别影响后面的相机/后处理
+        //屏幕空间阴影图用完了就关掉，别影响后面的相机/后处理（所以这句要在透明物体画完之后）
         buffer.SetGlobalFloat(screenSpaceShadowEnabledId, 0f);
-        buffer.EndSample("Draw Geometry");
+        buffer.EndSample("Draw Transparent");
         ExecuteBuffer();
         buffer.name = bufferName;//恢复缓冲区名，别影响后面的分组
-    }
-
-    //SSR（屏幕空间反射，前向版）：三趟（追踪 + 横竖两趟blur），结果留在"本帧要写的那张"上。
-    //和延迟的区别只有**时间关系**：延迟是同帧（追完立刻合成），前向是"本帧追、下一帧用" ⇒ 所以：
-    //  ① 写到 1-ssrReadIndex 那张、帧末交换；② **不做合成趟**（不拆间接高光，Lit 自己采 _SSRTex）；
-    //  ③ 三趟的 shader/参数和延迟完全共用。
-    //调用点：DrawVisibleGeometry 里 CopyAttachments()（本帧颜色快照+深度+法线都齐了）之后、画透明物之前。
-    void DrawSSR()
-    {
-        Material ssrMaterial = ssrSettings.Material;
-        if (ssrMaterial == null)//useSSR 里已经挡过一道，这里再兜一层，免得空引用
-        {
-            return;
-        }
-
-        RenderTexture writeTexture = ssrTextures[1 - ssrReadIndex];//本帧写这张；另一张是给本帧 Lit 采的"上一帧结果"
-
-        //帧调试器是按"命令缓冲区的名字"给每次执行分组的：不改名字的话，这几趟会挂在上一段下面
-        buffer.name = "Screen Space SSR";
-        buffer.BeginSample("Screen Space SSR");
-
-        //1.追踪：读 _CameraColorTexture（本帧"不透明+天空盒"的快照，带 mip）+ 深度 + 法线，写成 (反射色, 可信度a)
-        //（trace 自己不采 _SSRTex，但后面两趟 blur 要采它 ⇒ 顺手先把它绑到"本帧写的那张"）
-        buffer.SetRenderTarget(writeTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
-        buffer.SetGlobalTexture(ssrTexId, writeTexture);
-        buffer.DrawProcedural(Matrix4x4.identity, ssrMaterial,
-            (int)SSRPass.Trace, MeshTopology.Triangles, 3);
-
-        //2.横向blur：_SSRTex(就是上面写的那张) → _SSRTex_TempBlur
-        buffer.SetRenderTarget(ssrTexTempBlurId, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
-        buffer.DrawProcedural(Matrix4x4.identity, ssrMaterial,
-            (int)SSRPass.BlurHorizontal, MeshTopology.Triangles, 3);
-        buffer.SetGlobalTexture(ssrTexTempBlurId, ssrTexTempBlurId);//给下一趟采样用
-
-        //3.纵向blur：_SSRTex_TempBlur → _SSRTex（转一圈回来，结果仍在"本帧写的那张"上）
-        buffer.SetRenderTarget(writeTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
-        buffer.DrawProcedural(Matrix4x4.identity, ssrMaterial,
-            (int)SSRPass.BlurVertical, MeshTopology.Triangles, 3);
-
-        //4.恢复主渲染目标：紧接着要画透明物了（这既是它们要的 RT + 深度，
-        //   也顺手解决"最后一趟blur把渲染目标设成了SSR图"的问题）。Load 保住已经画好的颜色和深度
-        buffer.SetRenderTarget(colorAttachmentId, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store,
-            depthAttachmentId, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store);
-
-        buffer.EndSample("Screen Space SSR");
-        ExecuteBuffer();
-        buffer.name = "Draw Geometry";//恢复成外层那个组名（我们是在 "Draw Geometry" 里面跑的），别影响后面透明物的分组
-
-        //5.帧末交换：下一帧的"上一帧结果"= 本帧刚追出来的这张
-        //⚠️ 交换只能在这做（AllocateSSRTextures 里不能重置 ssrReadIndex，否则双缓冲永远不交换）
-        ssrReadIndex = 1 - ssrReadIndex;
     }
 
     ///用于释放申请的纹理等
@@ -692,12 +562,8 @@ public partial class CameraRendererForward : CameraRendererBase
             buffer.ReleaseTemporaryRT(screenSpaceShadowMaskTexTempId);
         }
 
-        //SSR：倒手图是本帧的临时图，按本帧是否走过释放；
-        //两张反射图是**持久**的，跨帧保留（要释放是在 AllocateSSRTextures 里"开关关掉"时，或 Dispose 里）
-        if (useSSR)
-        {
-            buffer.ReleaseTemporaryRT(ssrTexTempBlurId);
-        }
+        //SSR：本帧的 blur 倒手图已经在 ssr.Draw 里还掉了；两张反射图是**跨帧保留**的
+        //（释放走 Setup 的 else 分支，或 ssr.Dispose）
     }
 
     static bool copyTextureSupported = SystemInfo.copyTextureSupport > CopyTextureSupport.None; 
@@ -710,11 +576,20 @@ public partial class CameraRendererForward : CameraRendererBase
         {
             CameraRendererBase.CreateReadableColorTexture(
                 buffer, colorTextureId, bufferSize.x, bufferSize.y, useHDR, colorMipCount);
-            //要mip时一律走blit：CopyTexture 对"源没有mip、目标有mip"这种不匹配的行为没保证，
-            //而反正拷完都要 GenerateMips 一趟，blit 只写 mip0 正合适
-            if (copyTextureSupported && colorMipCount <= 1)
+            //写 mip0：两种写法都只写 mip0，mip1..N 靠下面的 GenerateMips 生成。
+            //⚠️ 2026-09-16 实测：给"带 mip 的目标"做 blit 写不进内容（帧调试器里那一步是 Blend Zero Zero：
+            //   Copy pass 的混合模式来自 [_CameraSrcBlend]/[_CameraDstBlend]，而这两个全局量只在 DrawFinal 里被设过
+            //   ⇒ 会话第一次渲染时就写成黑的）。所以开 mip 时也改走 CopyTexture，把目标 mip **显式写成 0**。
+            if (copyTextureSupported)
             {
-                buffer.CopyTexture(colorAttachmentId, colorTextureId);
+                if (colorMipCount <= 1)
+                {
+                    buffer.CopyTexture(colorAttachmentId, colorTextureId);
+                }
+                else
+                {
+                    buffer.CopyTexture(colorAttachmentId, 0, 0, colorTextureId, 0, 0);
+                }
             }
             else
             {
@@ -789,7 +664,7 @@ public partial class CameraRendererForward : CameraRendererBase
 
     public override void Dispose()
     {
-        ReleaseSSRTextures();//两张持久的反射图（跨帧的，得自己销毁）
+        ssr.Dispose();//两张持久的反射图（跨帧的，得自己销毁）+ SSR 的材质
         CoreUtils.Destroy(material);
         CoreUtils.Destroy(screenSpaceShadowMaterial);
         CoreUtils.Destroy(missingTexture);

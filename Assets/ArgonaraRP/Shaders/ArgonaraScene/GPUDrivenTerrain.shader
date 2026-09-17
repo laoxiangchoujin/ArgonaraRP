@@ -320,19 +320,11 @@ Shader "Argonara RP/Scene/Terrain"
 				surfaceWS.renderingLayerMask = asuint(unity_RenderingLayer.x);
 
 				BRDF brdf = GetBRDF(surfaceWS, false);
-				GI gi = GetGI(GI_FRAGMENT_DATA(input), surfaceWS, brdf);
+				//（和 LitPassFragmentGBuffer 同一套口径：gi.specular 由 GetGI 一次算好，含"上一帧的SSR"）
+				GI gi = GetGI(GI_FRAGMENT_DATA(input), surfaceWS, brdf, config.fragment.screenUV);
 				float3 emission = GetEmission(config);
-				//和 LitPassFragmentGBuffer 同一套口径：开了延迟的SSR时 GT4 里只写间接漫反射
-				//（高光留给 SSR 生成之后那趟全屏合成pass；两个写入端必须一致，不然地形这些物体会丢/重复高光）
-				float3 indirectColor;
-				if (_UseScreenSpaceReflectionInDeferred > 0)
-				{
-					indirectColor = IndirectDiffuse(surfaceWS, brdf, gi.diffuse);
-				}
-				else
-				{
-					indirectColor = IndirectBRDF(surfaceWS, brdf, gi.diffuse, gi.specular);
-				}
+				//间接光（漫反射 + 高光）整包写进 GT4（和 LitPassFragmentGBuffer 口径必须一致）
+				float3 indirectColor = IndirectBRDF(surfaceWS, brdf, gi.diffuse, gi.specular);
 
 				float shadingModelID4_null4 = ((uint)1 << 4) / 255.0;
 				color = GetLodDebugColor(_LodIndex).rgb;

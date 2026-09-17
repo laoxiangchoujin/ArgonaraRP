@@ -54,6 +54,9 @@ float CopyDepthPassFragment(Varyings input) : SV_Depth
 #include "../ShaderLibrary/GI.hlsl"
 #include "../ShaderLibrary/Lighting.hlsl"
 
+//（全屏 pass 的两个公共工具 —— 深度→世界坐标、几何面法线 —— 现在住在 ShaderLibrary/Fragment.hlsl 里，
+//  因为屏幕空间 PCSS 也要用；本文件经由 Common.hlsl 仍然看得见它们）
+
 //GBuffer全屏三角光照计算，处理Opaque物体，应针对不同着色模型有不同处理
 float4 DeferredLightPassFragment(Varyings input) : SV_Target
 {
@@ -87,23 +90,18 @@ float4 DeferredLightPassFragment(Varyings input) : SV_Target
     else if (shadingModelID == 1)
     {
         Surface surface;
-        //深度图重建世界坐标
-        
-        float4 posClip = float4(uv * 2 - 1, GTDepth, 1);
-        #if UNITY_UV_STARTS_AT_TOP
-        posClip.y = -posClip.y;  // 抵消 DefaultPassVertex 的 UV 翻转
-        #endif
-        float4 posWS = mul(UNITY_MATRIX_I_VP, posClip);
-        posWS /= posWS.w;
-        surface.position = posWS.xyz;
+        //深度图重建世界坐标（公共工具，见 Fragment.hlsl）
+        surface.position = ScreenSpaceWorldPosFromDepth(uv, GTDepth);
         
         //解码法线（GT1存储法线 * 0.5 + 0.5）
         float3 normal = SAMPLE_TEXTURE2D(_GBuffer2, sampler_linear_clamp, uv).xyz * 2.0 - 1.0;
         normal = normalize(normal);
         surface.normal = normal;
-        surface.interpolatedNormal = normal;
         surface.viewDirection = normalize(_WorldSpaceCameraPos - surface.position);
         surface.depth = -TransformWorldToView(surface.position).z;
+
+        //阴影偏移用的"几何面法线"（不含法线图扰动）：全屏 pass 没顶点内插法线，用深度邻居重构（见函数头）
+        surface.interpolatedNormal = ScreenSpaceGeometricNormal(surface.position, surface.depth, normal, uv);
         surface.albedo = color;
         surface.alpha = 1.0;
     

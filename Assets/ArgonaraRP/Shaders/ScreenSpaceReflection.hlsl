@@ -13,7 +13,8 @@
 //顺手修的几处小东西：
 //  ① Swap() 换手写（core 的 Common.hlsl 不保证提供 Swap）
 //  ② 深度采样器用 sampler_point_clamp（深度不该被线性过滤）
-//  ③ 命中法线用 ScreenSpaceSceneNormal()：延迟读 _GBuffer2、前向读 _CameraNormalsTexture（照抄 ScreenSpacePCSS 里的写法）
+//  ③ 法线分两种用途，别混：**反射方向**用着色法线（ScreenSpaceSceneNormal：延迟 _GBuffer2、前向 _CameraNormalsTexture），
+//     **背面剔除**用几何面法线（ScreenSpaceGeometricNormal 从深度重构，见 IsHitFrontFacing）
 //
 //**还没搬的（故意留着 = 需要做大改的）**：见文件末尾 TODO。
 
@@ -111,9 +112,8 @@ float _SSRMarchFadeStrength;    //命中点越靠射线末端越淡的强度（0
 float _SSRRoughnessMipScale;
 float _SSRRoughnessMipBias;
 
-//命中点的几何法线：延迟读 GBuffer2，前向读 DepthNormals prepass 的法线图。
+//命中点/接收面的**着色法线**（含法线贴图）：延迟读 GBuffer2，前向读 DepthNormals prepass 的法线图。
 //编码统一是 "normal * 0.5 + 0.5"，所以解码一样（和 ScreenSpacePCSS.shader 里那份一致）
-int _UseDeferredRenderer;//1=延迟、0=前向（各自的渲染器每帧设置）
 TEXTURE2D(_CameraNormalsTexture);
 float3 ScreenSpaceSceneNormal (float2 uv)
 {
@@ -314,12 +314,21 @@ float alphaCalc(float3 rayDirection, float2 hitPixel, float marchPercent, float 
 }
 
 //背面剔除：射线若从物体背面穿过该表面，我们只能取到它正面的颜色，属于假命中。
-//只在命中点采一次法线，避免把这笔开销塞进会被调用几十次的 intersect 里
+//用的是**几何面法线**（从深度重构、不含法线图扰动）：这是"面的朝向/可见性"判据，和光照一样该用几何法线——
+//若用着色法线，法线贴图很花的地方会把"正面"误判成"背面"⇒ 该有反射的位置出现黑点/闪烁。
+//只在命中点算一次（1次重建 + 4次深度采样），不塞进会被调用几十次的 intersect 里。
 bool IsHitFrontFacing(float3 reflectDirVS, float2 hitPixel)
 {
-    float3 hitNormalWS = ScreenSpaceSceneNormal(hitPixel);
-    if (dot(hitNormalWS, hitNormalWS) < 0.001)//法线图未生成时采样为 0（比如天空盒像素），跳过剔除
+    float rawHitDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, hitPixel);
+    float3 shadingNormal = ScreenSpaceSceneNormal(hitPixel);
+    //天空/无效像素：法线图未生成时采样为0（深度也都是0）⇒ 没有面可判，不剔除
+    if (rawHitDepth < 0.00001 || dot(shadingNormal, shadingNormal) < 0.001)
         return true;
+
+    //命中点世界坐标 + 视深度 → 几何面法线（着色法线只当"统一朝向"的参考，见 Fragment.hlsl 里该函数头）
+    float3 hitPosWS = ScreenSpaceWorldPosFromDepth(hitPixel, rawHitDepth);
+    float hitViewDepth = -TransformWorldToView(hitPosWS).z;
+    float3 hitNormalWS = ScreenSpaceGeometricNormal(hitPosWS, hitViewDepth, shadingNormal, hitPixel);
     //<0 = 从正面进入
     return dot(reflectDirVS, normalize(TransformWorldToViewDir(hitNormalWS))) < 0.0;
 }
@@ -351,18 +360,13 @@ float4 TracePassFragment (Varyings input) : SV_Target
 {
     float2 uv = input.screenUV;
 
-    //1.深度 → 世界坐标（翻转和矩阵乘都照抄 DeferredLightPassFragment）
+    //1.深度 → 世界坐标（全屏 pass 的公共工具，见 Fragment.hlsl）
     float rawDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
     if (rawDepth < 0.00001)//深度几乎是0 = 天空/清屏色：这里没有接收面，不产生反射
     {
         return 0.0;
     }
-    float4 posClip = float4(uv * 2 - 1, rawDepth, 1);
-    #if UNITY_UV_STARTS_AT_TOP
-    posClip.y = -posClip.y;  // 抵消 DefaultPassVertex 的 UV 翻转
-    #endif
-    float4 posWS4 = mul(UNITY_MATRIX_I_VP, posClip);
-    float3 posWS = posWS4.xyz / posWS4.w;
+    float3 posWS = ScreenSpaceWorldPosFromDepth(uv, rawDepth);
 
     //2.接收面的法线 + 反射方向（都要视空间的，步进在视空间/屏幕空间里做）
     float3 normalWS = ScreenSpaceSceneNormal(uv);
@@ -401,59 +405,10 @@ float4 TracePassFragment (Varyings input) : SV_Target
 }
 
 //=========================================================
-//====== 间接高光合成那一趟的 fragment（shader 里的 pass 3，延迟专用）======
-//=========================================================
-//开了SSR时，GBuffer那一趟只写了间接漫反射（GT4），间接高光留到这里补：
-//读回GBuffer的 法线/粗糙度/金属度/遮蔽 + 深度重建位置，重算入射高光（环境反射与SSR已混好），
-//乘上高光权重后**加法混合**加回颜色附件（pass 里配的 Blend One One）。
-//⚠️ 这趟的渲染目标就是颜色附件本身 ⇒ 这里**不用也不该**去采样屏幕颜色（同一张RT边读边写是未定义行为），
-//   "加到已有画面上"是混合状态干的：dst = 1×src + 1×dst。所以这里只管算出"该加多少"。
-//加法混合会连alpha一起加 ⇒ 这里输出 alpha = 0，保持颜色附件的alpha不动。
-float4 CompositePassFragment (Varyings input) : SV_Target
-{
-    float2 uv = input.screenUV;
-
-    //天空/清屏色：没有接收面，不产生间接高光（输出0在加法混合下等于没加）
-    float rawDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
-    if (rawDepth < 0.00001)
-    {
-        return 0.0;
-    }
-
-    //深度 → 世界坐标（和 TracePassFragment / DeferredLightPassFragment 同一套口径）
-    float4 posClip = float4(uv * 2 - 1, rawDepth, 1);
-    #if UNITY_UV_STARTS_AT_TOP
-    posClip.y = -posClip.y;
-    #endif
-    float4 posWS4 = mul(UNITY_MATRIX_I_VP, posClip);
-    float3 posWS = posWS4.xyz / posWS4.w;
-
-    //从GBuffer把Surface拼回来（其余字段间接高光用不到，不填）
-    Surface surfaceWS;
-    surfaceWS.position = posWS;
-    surfaceWS.normal = ScreenSpaceSceneNormal(uv);
-    surfaceWS.interpolatedNormal = surfaceWS.normal;
-    surfaceWS.viewDirection = normalize(_WorldSpaceCameraPos - posWS);
-    surfaceWS.depth = -TransformWorldToView(posWS).z;
-    surfaceWS.albedo = SAMPLE_TEXTURE2D(_GBuffer1, sampler_linear_clamp, uv).rgb;
-    surfaceWS.alpha = 1.0;
-
-    float4 GT3 = SAMPLE_TEXTURE2D(_GBuffer3, sampler_linear_clamp, uv);
-    surfaceWS.roughness = GT3.x;
-    surfaceWS.metallic = GT3.y;
-    surfaceWS.occlusion = GT3.z;
-
-    BRDF brdf = GetBRDF(surfaceWS, false);
-
-    //入射高光：这个方向上的环境反射与当帧SSR混好（混的比例就是追踪那趟写下的可信度a）
-    float3 giSpecular = SampleEnvironment(surfaceWS, brdf, uv);
-    
-    return float4(IndirectSpecular(surfaceWS, brdf, giSpecular), 0.0);
-}
-
-//=========================================================
 //====== TODO ======
 //=========================================================
-//接收面/水面的合成不在这趟里：按既定架构，透明物（水面等）自己采 _SSRTex 做 Fresnel/粗糙度合成。
+//接收面/水面的合成不在这个 shader 里：按既定架构，透明物（水面等）自己在自己的着色里采 _SSRTex 做 Fresnel/粗糙度合成。
+//不透明物体也不需要"合成pass"：它们在**自己的物体pass**（前向Lit / 延迟GBuffer与地形）里就调
+//  SampleEnvironment(surface, brdf, screenUV) 把"环境反射 + 上一帧SSR"按可信度a混好、写进最终颜色/GT4。
 
 #endif

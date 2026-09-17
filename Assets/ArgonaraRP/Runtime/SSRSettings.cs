@@ -1,7 +1,5 @@
 using UnityEngine;
 
-///屏幕空间反射（SSR）的管线级设置。
-///调参的默认值直接抄 URP 那版 sh_SSR.shader 的 Properties —— 方便对照，也方便出问题时逐个往回调。
 [System.Serializable]
 public class SSRSettings
 {
@@ -9,6 +7,7 @@ public class SSRSettings
     public bool enabled = false;
 
     //=============================== 追踪（trace）===============================
+    [Header("追踪设置")]
     //射线总长（视空间米）：没碰到东西就在这个长度内一直步进
     [Range(0.1f, 200f)] public float totalRayLength = 32f;
     //每步跨多少屏幕像素：越大越快、越容易漏交
@@ -21,6 +20,7 @@ public class SSRSettings
     [Range(0.0001f, 5f)] public float pixelThickness = 0.15f;
 
     //=============================== 命中后的淡出（alphaCalc）===============================
+    [Header("命中后的淡出和强度")]
     //反射方向朝相机时的淡出宽度：viewZ≤0 全亮，越朝相机飞来(viewZ越正)越淡，到该值时完全消失
     [Range(0.01f, 1f)] public float backRayFadeWidth = 0.2f;
     //屏幕边缘淡出的起点：屏幕中心=0、边缘=1 的归一化半径，超过它开始淡出，到边缘正好淡到 0
@@ -40,6 +40,7 @@ public class SSRSettings
     //消萤火虫（firefly）：那两趟blur的权重再乘一个"按亮度反向"的 w = 1/(Luminance+1)
     //（卡特莱克 bloom 的 fade fireflies 那招）⇒ 孤立的高亮命中点（如单点命中太阳高光）被邻居平均掉。
     //关掉 = 纯二项式模糊（改动前的行为，零成本开关，只是个 uniform）
+    [Header("消除ssr萤火虫")]
     [Tooltip("消除 SSR 萤火虫：blur 改用按亮度反向加权，把孤立的高亮命中点压掉；关掉 = 纯二项式模糊")]
     public bool fireflySuppression = true;
 
@@ -52,6 +53,7 @@ public class SSRSettings
     //反射颜色按"接收面粗糙度"取颜色快照的 mip 级：越粗糙采越糊的一级 ⇒ 命中点抖动/高光闪点被平均掉。
     //lod = scale * roughness + bias。lod 的有效上限 = 颜色快照的 mip 级数 - 1
     //（级数在 CameraBufferSettings.copyColorMipCount：8 级 ⇒ lod 最大 7；mip 没开时这两项无意义）
+    [Header("ssr颜色纹理mip采样参数")]
     [Tooltip("粗糙度→mip 的斜率：rough=1 时采到哪一级。取『级数-1』表示最粗糙正好采最糊那级（8级就填7）；太糊就按观感往回收，常用 4~5")]
     [Range(0f, 10f)] public float roughnessMipScale = 5f;
     [Tooltip("粗糙度→mip 的整体平移：正=更糊、负=更清。微调用，一般 0")]

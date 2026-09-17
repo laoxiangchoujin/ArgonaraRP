@@ -8,8 +8,10 @@
 //（提供 Varyings / LitPassVertex / InputConfig 等），这样 Lit.shader 和 GPUDrivenTerrain.shader
 //各自的相对路径都能用。
 //
-//写的是**几何法线**（input.normalWS，不含法线贴图）：屏幕空间阴影的bias、SSAO 都用这把尺子，
-//和延迟那边"GBuffer2存的是含法线贴图的法线"略有差别，但口径与 forward 的光照一致。
+//写的是**前向的着色法线**（= LitPassFragment 里那条：算法线贴图得到的世界空间法线），
+//编码 "normal * 0.5 + 0.5"，和延迟那边的 _GBuffer2 **完全同一口径** ⇒ 两条路共享的屏幕空间效果
+//（SSR 的接收面反射方向、PCSS 两趟 blur 的保边项、给几何法线重构当翻正参考）读到的是同一种东西。
+//⚠️ 阴影 bias 要的**几何法线**不在这里：全屏 pass 用 ScreenSpaceGeometricNormal（见 Fragment.hlsl）从深度重构。
 float4 DepthNormalsPassFragment (Varyings input) : SV_Target
 {
     UNITY_SETUP_INSTANCE_ID(input);
@@ -21,8 +23,15 @@ float4 DepthNormalsPassFragment (Varyings input) : SV_Target
         clip(GetBase(config).a - GetCutoff(config));
     #endif
 
+    //和 LitPassFragment 同一条算法（法线贴图 → 世界空间着色法线），只是不做光照
+    #if defined(_NORMAL_MAP)
+        float3 normalWS = normalize(NormalTangentToWorld(GetNormalTS(config), input.normalWS, input.tangentWS));
+    #else
+        float3 normalWS = normalize(input.normalWS);
+    #endif
+
     //法线编码成 0~1 存（和 GBuffer2 一样的约定），省得两边解码方式不同
-    return float4(normalize(input.normalWS) * 0.5 + 0.5, 0.0);
+    return float4(normalWS * 0.5 + 0.5, 0.0);
 }
 
 #endif

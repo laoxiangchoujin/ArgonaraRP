@@ -1,7 +1,7 @@
 #ifndef CUSTOM_UNITY_INPUT_INCLUDED
 #define CUSTOM_UNITY_INPUT_INCLUDED
 
-//这些都是逐物体的数据
+//这些都是逐物体的数据        ！！！注意可能，全屏draw的时候不能获取！！！
 CBUFFER_START(UnityPerDraw)//要让shader兼容SRP batcher，第二，对custom input，要把这些矩阵放per Draw的CBuffer里
     float4x4 unity_ObjectToWorld;
     float4x4 unity_WorldToObject;
@@ -36,6 +36,8 @@ CBUFFER_START(UnityPerDraw)//要让shader兼容SRP batcher，第二，对custom 
     float4 unity_SpecCube0_HDR;
 CBUFFER_END
 
+
+//以下都是逐相机数据
 float3 _WorldSpaceCameraPos;//像是这个变量，就应该是全局而非是逐物体的，就得移出CBuffer
 
 float4 unity_OrthoParams;//若是正交相机，则此值w为1
@@ -51,6 +53,10 @@ float4x4 unity_MatrixInvV;
 float4x4 unity_MatrixInvVP;
 float4x4 unity_prev_MatrixM;
 float4x4 unity_prev_MatrixIM;
+
+
+//以下是逐管线数据        基本上就是我在做各种效果的时候，确定的整个管线唯一的数据
+int _UseDeferredRenderer;//1=延迟、0=前向（各自的渲染器每帧设置）
 
 
 

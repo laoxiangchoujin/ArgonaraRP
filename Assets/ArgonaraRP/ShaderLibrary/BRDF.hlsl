@@ -105,28 +105,15 @@ float3 IndirSpecFactor(float roughnessSquare,float roughness,float metallic,floa
     return surfaceReduction * lerp(F0,grazingTerm,fresnelTerm);//直射时候系数就是F0正视角反射率，掠射的时候系数是算出的grazingTerm“掠射角反射率”的经验近似
 }
 
-//间接光漫反射（单独拆出来：延迟的GBuffer在"间接高光交给全屏合成pass"的模式下，只写这一半）
-float3 IndirectDiffuse (Surface surface, BRDF brdf, float3 giDiffuse)
-{
-    float nv = max(saturate(dot(surface.normal, surface.viewDirection)), 0.000001);
-    float3 F = fresnelSchlickRoughness(nv, brdf.F0, brdf.roughness);
-    float3 k_d = (1.0 - F) * (1.0 - surface.metallic);
-    return giDiffuse * k_d * brdf.albedo * surface.occlusion;
-}
-
-//间接光高光（单独拆出来：那趟全屏合成pass要算的就是它）
-float3 IndirectSpecular (Surface surface, BRDF brdf, float3 giSpecular)
-{
-    float nv = max(saturate(dot(surface.normal, surface.viewDirection)), 0.000001);
-    float3 indirectSpecFactor = IndirSpecFactor(brdf.roughnessSquare, surface.roughness, surface.metallic, brdf.F0, nv);
-    return giSpecular * indirectSpecFactor * surface.occlusion;
-}
-
-//间接光BRDF = 间接光diffuse + 间接光specular（就是上面两个相加；
-//原来那句是"先加再乘occlusion"，现在拆成各自乘，occlusion是标量所以结果逐像素完全一致）
+//间接光BRDF = 间接光漫反射 + 间接光高光（最后整体乘 occlusion）
 float3 IndirectBRDF(Surface surface, BRDF brdf, float3 giDiffuse, float3 giSpecular)
 {
-    return IndirectDiffuse(surface, brdf, giDiffuse) + IndirectSpecular(surface, brdf, giSpecular);
+    float nv = max(saturate(dot(surface.normal, surface.viewDirection)), 0.000001);
+    //漫反射：k_d 是"扣掉菲涅尔反射后剩下的那部分能量"
+    float3 F = fresnelSchlickRoughness(nv, brdf.F0, brdf.roughness);
+    float3 k_d = (1.0 - F) * (1.0 - surface.metallic);
+    float3 indirectSpecFactor = IndirSpecFactor(brdf.roughnessSquare, surface.roughness, surface.metallic, brdf.F0, nv);
+    return (giDiffuse * k_d * brdf.albedo + giSpecular * indirectSpecFactor) * surface.occlusion;
 }
 
 

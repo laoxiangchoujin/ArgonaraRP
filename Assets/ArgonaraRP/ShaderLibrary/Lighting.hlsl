@@ -73,10 +73,10 @@ float3 GetLightingDeferred (Surface surfaceWS, BRDF brdf) {
     #else
     for (int j = 0; j < GetOtherLightCount(); j++) {
         Light light = GetOtherLight(j, surfaceWS, shadowData);
-        if (RenderingLayersOverlap(surfaceWS, light))
-        {
+        //if (RenderingLayersOverlap(surfaceWS, light))
+        //{
             color += GetLighting(surfaceWS, brdf, light);
-        }
+        //}
     }
     #endif
     return color;

@@ -61,24 +61,17 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
         #define MASK_BLUR_RADIUS_MIN 1.0  //下限1 = 普通箱式（抽头间距 = 1个mask纹素）
         #define MASK_BLUR_RADIUS_MAX 2.0  //上限别放大：抽头间距=2个mask纹素已经在稀疏采样的边缘了
 
-        //屏幕UV + 原始深度 → 世界坐标（和 DeferredLightPassFragment 那套翻转保持一致）
-        float3 ScreenSpaceBlurWorldPos (float2 uv, float rawDepth)
-        {
-            float4 posClip = float4(uv * 2 - 1, rawDepth, 1);
-            #if UNITY_UV_STARTS_AT_TOP
-                posClip.y = -posClip.y;
-            #endif
-            float4 posWS = mul(UNITY_MATRIX_I_VP, posClip);
-            return posWS.xyz / posWS.w;
-        }
+        //（"屏幕UV + 原始深度 → 世界坐标"用公共工具 ScreenSpaceWorldPosFromDepth，见 Fragment.hlsl）
 
         //本管线当前是前向还是延迟：1=延迟、0=前向（各自的渲染器每帧设置）。
         //用来区分"用途相同但名字不同"的纹理：延迟的法线在 _GBuffer2，前向的在 _CameraNormalsTexture（DepthNormals prepass输出）。
-        int _UseDeferredRenderer;
+        
         TEXTURE2D(_CameraNormalsTexture);
 
-        //取当前场景的法线（几何法线）：延迟读GBuffer2，前向读DepthNormals prepass输出的法线图。
-        //编码统一是 "normal * 0.5 + 0.5"，所以解码方式一样。
+        //取当前场景的**着色法线**（含法线贴图）：延迟读 GBuffer2，前向读 DepthNormals prepass 输出的法线图。
+        //编码统一是 "normal * 0.5 + 0.5"，所以解码方式一样，两条路的**口径也一致**（都是着色法线）。
+        //用途：① 两趟 blur 的"法线保边项"；② 给 ScreenSpaceGeometricNormal 当翻正参考。
+        //（阴影 bias 要的**几何法线**是那边从深度重构出来的，不读这张图）
         float3 ScreenSpaceSceneNormal (float2 uv)
         {
             float3 encoded = (_UseDeferredRenderer > 0)
@@ -97,7 +90,7 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
             }
 
             //深度项：用世界坐标距离（比直接比深度更准确，斜面上也成立）
-            float3 posN = ScreenSpaceBlurWorldPos(uvNeighbor, rawDepthN);
+            float3 posN = ScreenSpaceWorldPosFromDepth(uvNeighbor, rawDepthN);
             float wDepth = saturate(1.0 - length(posN - posCenter) / depthTolerance);
 
             //法线项：朝向差得多就不混（深度接近但朝向不同的地方全靠它，比如地面与竖墙交界）
@@ -159,25 +152,21 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
                     return 0.0;
                 }
 
-                //深度图重建世界坐标（抄 DeferredLightPassFragment）
-                float4 posClip = float4(uv * 2 - 1, rawDepth, 1);
-                #if UNITY_UV_STARTS_AT_TOP
-                posClip.y = -posClip.y;  // 抵消 DefaultPassVertex 的 UV 翻转
-                #endif
-                float4 posWS = mul(UNITY_MATRIX_I_VP, posClip);
-                posWS /= posWS.w;
+                //深度图重建世界坐标（公共工具，见 Fragment.hlsl）
+                float3 posWS = ScreenSpaceWorldPosFromDepth(uv, rawDepth);
 
                 //伪造一个 Surface：阴影那套函数只要这几个字段（position/depth/dither/interpolatedNormal），
                 //其余字段它们不读，给中立值即可（顺便省掉 GBuffer1/GBuffer3 的两次采样）
                 Surface surfaceWS;
-                surfaceWS.position = posWS.xyz;
+                surfaceWS.position = posWS;
+                //视空间深度（米）：GetShadowData 里的距离淡出 FadedShadowStrength 要的是这个，
+                //下面的几何法线也要用（注意不能用原始深度值充当 depth，那样对距离淡出是错的）
+                surfaceWS.depth = -TransformWorldToView(surfaceWS.position).z;
                 float3 normal = ScreenSpaceSceneNormal(uv);//延迟从GBuffer2、前向从_CameraNormalsTexture
                 surfaceWS.normal = normal;
-                surfaceWS.interpolatedNormal = normal;//主光PCSS的bias法线用它
+                //PCSS 的 bias 法线要"几何面法线"（不含法线图扰动）：和延迟光照 pass 同一个函数、同一口径
+                surfaceWS.interpolatedNormal = ScreenSpaceGeometricNormal(surfaceWS.position, surfaceWS.depth, normal, uv);
                 surfaceWS.viewDirection = normalize(_WorldSpaceCameraPos - surfaceWS.position);
-                //视空间深度（米）：GetShadowData 里的距离淡出 FadedShadowStrength 要的是这个。
-                //注意不能用原始深度值充当 depth（DeferredLightPassFragment 里那样写对距离淡出是错的）
-                surfaceWS.depth = -TransformWorldToView(surfaceWS.position).z;
                 surfaceWS.dither = InterleavedGradientNoise(input.positionCS_SS.xy, 0);//cascade blend 的 Dither 模式要用
                 surfaceWS.albedo = 0.0;
                 surfaceWS.alpha = 1.0;
@@ -231,7 +220,7 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
                     return 1.0;//天空：pass0写进去的就是1
                 }
 
-                float3 posC = ScreenSpaceBlurWorldPos(uv, rawDepthC);
+                float3 posC = ScreenSpaceWorldPosFromDepth(uv, rawDepthC);
                 float3 normalC = ScreenSpaceSceneNormal(uv);
                 //深度容差 = 视深度的 5%（随距离线性放大，避免远处把该保留的边界也糊掉）。想更"保边"就调小
                 float depthTolerance = max(LinearEyeDepth(rawDepthC, _ZBufferParams), 0.001) * 0.05;
@@ -281,7 +270,7 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
                     return 1.0;//天空：pass0写进去的就是1
                 }
 
-                float3 posC = ScreenSpaceBlurWorldPos(uv, rawDepthC);
+                float3 posC = ScreenSpaceWorldPosFromDepth(uv, rawDepthC);
                 float3 normalC = ScreenSpaceSceneNormal(uv);
                 float depthTolerance = max(LinearEyeDepth(rawDepthC, _ZBufferParams), 0.001) * 0.05;
 
@@ -334,14 +323,10 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
 
                 //先**无条件**重建世界坐标并算屏幕导数：ddx/ddy 是象限级的，
                 //要是有些lane提前return（天空），同一象限里其它lane的导数就会被带歪。
-                float4 posClip = float4(uv * 2 - 1, max(rawDepth, 1e-5), 1);
-                #if UNITY_UV_STARTS_AT_TOP
-                    posClip.y = -posClip.y;
-                #endif
-                float4 posWS = mul(UNITY_MATRIX_I_VP, posClip);
-                posWS /= posWS.w;
+                //⚠️ max(rawDepth,1e-5)：天空(depth=0)时 w=0 ⇒ 世界坐标会变 inf，导数跟着坏
+                float3 posWS = ScreenSpaceWorldPosFromDepth(uv, max(rawDepth, 1e-5));
                 //一个mask纹素**在世界里**有多长（mask纹素 = 4个屏幕像素）→ 判据要用
-                float worldPerMaskTexel = max(length(ddx(posWS.xyz)), length(ddy(posWS.xyz)));
+                float worldPerMaskTexel = max(length(ddx(posWS)), length(ddy(posWS)));
 
                 if (rawDepth < 0.00001 || GetDirectionalLightCount() == 0)
                 {
@@ -349,12 +334,13 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
                 }
 
                 Surface surfaceWS;
-                surfaceWS.position = posWS.xyz;
+                surfaceWS.position = posWS;
+                surfaceWS.depth = -TransformWorldToView(surfaceWS.position).z;
                 float3 normal = ScreenSpaceSceneNormal(uv);//延迟读GBuffer2，前向读_CameraNormalsTexture
                 surfaceWS.normal = normal;
-                surfaceWS.interpolatedNormal = normal;
+                //PCSS 的 bias 法线要"几何面法线"（不含法线图扰动）：和延迟光照 pass 同一个函数、同一口径
+                surfaceWS.interpolatedNormal = ScreenSpaceGeometricNormal(surfaceWS.position, surfaceWS.depth, normal, uv);
                 surfaceWS.viewDirection = normalize(_WorldSpaceCameraPos - surfaceWS.position);
-                surfaceWS.depth = -TransformWorldToView(surfaceWS.position).z;
                 surfaceWS.dither = 0.0;//这一趟不做级联混合，抖动给0即可（行为确定）
                 surfaceWS.albedo = 0.0;
                 surfaceWS.alpha = 1.0;
@@ -408,7 +394,7 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
                 float rawDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
                 if (rawDepth >= 1e-5)
                 {
-                    float3 posWS = ScreenSpaceBlurWorldPos(uv, rawDepth);
+                    float3 posWS = ScreenSpaceWorldPosFromDepth(uv, rawDepth);
                     float dis = distance(_WorldSpaceCameraPos.xyz, posWS);
                     radius = 1.0 / (dis * dis * MASK_BLUR_FALLOFF + MASK_BLUR_FALLOFF);
                 }
@@ -452,7 +438,7 @@ Shader "Hidden/ArgonaraRP/Screen Space PCSS"
                 float rawDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_point_clamp, uv);
                 if (rawDepth >= 1e-5)
                 {
-                    float3 posWS = ScreenSpaceBlurWorldPos(uv, rawDepth);
+                    float3 posWS = ScreenSpaceWorldPosFromDepth(uv, rawDepth);
                     float dis = distance(_WorldSpaceCameraPos.xyz, posWS);
                     radius = 1.0 / (dis * dis * MASK_BLUR_FALLOFF + MASK_BLUR_FALLOFF);
                 }

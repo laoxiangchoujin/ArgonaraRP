@@ -54,43 +54,5 @@ public abstract class CameraRendererBase
 		buffer.GetTemporaryRT(nameId, descriptor, FilterMode.Trilinear);
 	}
 
-	//=========================== SSR 的参数上传 ===========================
-	//SSR 的追踪/降噪调参都是裸的全局 uniform（见 ScreenSpaceReflection.hlsl），前后向各画一趟 trace，
-	//参数必须完全一致 ⇒ 上传放这里，两个渲染器都调它（名字一一对应，改一个地方就够）。
-	//（延迟那边现在还有一份自己的 SetSSRParameters，内容和这里相同；以后可以并过来）
-	static int
-		ssrTotalRayLengthId = Shader.PropertyToID("_SSRTotalRayLength"),
-		ssrPixelStrideId = Shader.PropertyToID("_SSRPixelStride"),
-		ssrStepCountLimitId = Shader.PropertyToID("_SSRStepCountLimit"),
-		ssrNearStepBoldenRangeId = Shader.PropertyToID("_SSRNearStepBoldenRange"),
-		ssrPixelThicknessId = Shader.PropertyToID("_SSRPixelThickness"),
-		ssrBackRayFadeWidthId = Shader.PropertyToID("_SSRBackRayFadeWidth"),
-		ssrScreenEdgeFadeStartId = Shader.PropertyToID("_SSRScreenEdgeFadeStart"),
-		ssrMarchFadeStrengthId = Shader.PropertyToID("_SSRMarchFadeStrength"),
-		ssrIntensityId = Shader.PropertyToID("_SSRIntensity"),
-		ssrRoughnessMipScaleId = Shader.PropertyToID("_SSRRoughnessMipScale"),
-		ssrRoughnessMipBiasId = Shader.PropertyToID("_SSRRoughnessMipBias"),
-		ssrFireflySuppressionId = Shader.PropertyToID("_SSRFireflySuppression"),
-		ssrFireflyStrengthId = Shader.PropertyToID("_SSRFireflyStrength");
-
-	///把 SSRSettings 里的调参上传成全局 uniform（每帧一次就够，不必每趟都传）
-	public static void SetSSRParameters(CommandBuffer buffer, SSRSettings ssrSettings)
-	{
-		//追踪
-		buffer.SetGlobalFloat(ssrTotalRayLengthId, ssrSettings.totalRayLength);
-		buffer.SetGlobalFloat(ssrPixelStrideId, ssrSettings.pixelStride);
-		buffer.SetGlobalInt(ssrStepCountLimitId, ssrSettings.stepCountLimit);
-		buffer.SetGlobalFloat(ssrNearStepBoldenRangeId, ssrSettings.nearStepBoldenRange);
-		buffer.SetGlobalFloat(ssrPixelThicknessId, ssrSettings.pixelThickness);
-		//命中后的淡出
-		buffer.SetGlobalFloat(ssrBackRayFadeWidthId, ssrSettings.backRayFadeWidth);
-		buffer.SetGlobalFloat(ssrScreenEdgeFadeStartId, ssrSettings.screenEdgeFadeStart);
-		buffer.SetGlobalFloat(ssrMarchFadeStrengthId, ssrSettings.marchFadeStrength);
-		//合成/质量
-		buffer.SetGlobalFloat(ssrIntensityId, ssrSettings.intensity);
-		buffer.SetGlobalFloat(ssrRoughnessMipScaleId, ssrSettings.roughnessMipScale);
-		buffer.SetGlobalFloat(ssrRoughnessMipBiasId, ssrSettings.roughnessMipBias);
-		buffer.SetGlobalFloat(ssrFireflySuppressionId, ssrSettings.fireflySuppression ? 1f : 0f);
-		buffer.SetGlobalFloat(ssrFireflyStrengthId, ssrSettings.fireflyStrength);
-	}
+	
 }
