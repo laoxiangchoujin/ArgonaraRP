@@ -18,6 +18,13 @@ public partial class CameraRendererDeferred : CameraRendererBase
     ScreenSpaceReflection ssr = new ScreenSpaceReflection();
     bool useSSR;
 
+    //=========================== Hi-Z（分层深度图）===========================
+    //SSR 的追踪用它决定步长（安全就升 mip、碰到就退一级 ⇒ 比线性步进快得多）。它的设置挂在 SSR 设置里（ssrSettings.hiz）。
+    //建图/逐级降采样/释放都在 HierarchicalZ 里，这里只管**时机**：
+    //  Setup：和 ssr.Setup 挨着（建图 + 传参数，不碰渲染目标）
+    //  Draw：紧挨着 ssr.Draw 之前（此刻深度图完整、反射源也齐了）
+    HierarchicalZ hiz = new HierarchicalZ();
+
     private const string bufferName = "Render Camera Deferred";
     private CommandBuffer buffer = new CommandBuffer
     {
@@ -223,6 +230,9 @@ public partial class CameraRendererDeferred : CameraRendererBase
         //+ 上传调参；关掉那帧则是释放两张持久图 + 绑 1×1 纯黑（不执行的话本帧会采到上一帧那张不该再用的图）。
         //⚠️ 必须放在下面"设成颜色附件+深度"之前：建图那几帧里会清图、把渲染目标设成 SSR 图。
         ssr.Setup(buffer, ssrSettings, useSSR, bufferSize.x, bufferSize.y, useHDR);
+
+        //HiZ：同样**每帧都调**（不走时在里面释放主图 + 绑黑图兜底）。useSSR 为假就不用建它（眼下只有 SSR 会用）
+        hiz.Setup(buffer, ssrSettings?.hiz, useSSR, bufferSize.x, bufferSize.y);
 
         //用于写入的color缓冲
         buffer.GetTemporaryRT(colorAttachmentId, bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
@@ -485,6 +495,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
         //所以下面画的**透明物**拿到的是当帧的反射（不透明物体在 GBuffer 那趟拿到的是上一帧那张）
         if (useSSR)
         {
+            hiz.Draw(buffer);//先建 HiZ（逐级降采样），追踪那趟要按 mip 采它；此刻深度图已经完整
             ssr.Draw(buffer, colorAttachmentId, gDepthId);//三趟（附件 id 由各渲染器给）
             ExecuteBuffer();//让上面那些 RT/全局绑定立刻生效：紧接着要画透明物了
             buffer.name = bufferName; //恢复本渲染器的缓冲区名（那几趟改成了 "Screen Space SSR"）
@@ -654,6 +665,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
     public override void Dispose()
     {
         ssr.Dispose();//两张持久的反射图（跨帧的，得自己销毁）+ SSR 的材质
+        hiz.Dispose();//HiZ 的主图（跨帧常驻的）+ 它的材质
         CoreUtils.Destroy(material);
         CoreUtils.Destroy(screenSpaceShadowMaterial);
         CoreUtils.Destroy(missingTexture);

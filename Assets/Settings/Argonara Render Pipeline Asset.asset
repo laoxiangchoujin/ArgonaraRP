@@ -60,20 +60,25 @@ MonoBehaviour:
     other:
       atlasSize: 1024
   ssr:
-    enabled: 0
+    enabled: 1
+    fullResolution: 1
     totalRayLength: 32
-    pixelStride: 2
-    stepCountLimit: 64
-    nearStepBoldenRange: 100
+    pixelStride: 1
+    stepCountLimit: 128
+    nearStepBoldenRange: 500
     pixelThickness: 0.15
     backRayFadeWidth: 0.2
     screenEdgeFadeStart: 0.97
-    marchFadeStrength: 0.8
+    marchFadeStrength: 0
     intensity: 1
     fireflySuppression: 1
     fireflyStrength: 0.2
     roughnessMipScale: 3
     roughnessMipBias: 0
+    hiz:
+      enabled: 1
+      mipCount: 5
+      shader: {fileID: 4800000, guid: 82a284fd861b7174191a9a2f2944f7d4, type: 3}
     shader: {fileID: 4800000, guid: ce2eb3678f384034c8aef18a989cca1a, type: 3}
   postFXSettings: {fileID: 11400000, guid: 80dc71d8e864e284581e4ac8f8a23efe, type: 2}
   colorLUTResolution: 32

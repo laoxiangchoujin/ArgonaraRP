@@ -62,10 +62,12 @@ public class ScreenSpaceReflection
 	///（"关掉 SSR"那条路不走这里：Setup 里走 ReleaseTextures + 绑黑图）
 	///⚠️ 会把新建的图顺手清一次（新图内容未定义，不清的话第一帧/重建帧会把垃圾当"上一帧的结果"），
 	///   清完渲染目标停在最后清的那张图上 ⇒ 调用方紧接着要画东西的话，自己 SetRenderTarget 恢复。
-	private void AllocateTextures (CommandBuffer buffer, int screenWidth, int screenHeight, bool hdr)
+	private void AllocateTextures (CommandBuffer buffer, int screenWidth, int screenHeight, bool hdr, bool fullResolution)
 	{
-		//半分辨率：SSR 本身就是个低频结果，像素数省 4 倍（实测全分辨率追踪除了更慢几乎没区别）
-		int width = Mathf.Max(1, screenWidth / 2), height = Mathf.Max(1, screenHeight / 2);
+		//分辨率由设置里的开关决定：默认半分辨率（SSR 本身就是个低频结果，像素数省 4 倍）；
+		//开全分辨率 = 反射内容的分辨率上限翻倍（高频边缘的台阶细一半），代价是显存/带宽 ×4、trace 像素数 ×4。
+		int width = Mathf.Max(1, fullResolution ? screenWidth : screenWidth / 2);
+		int height = Mathf.Max(1, fullResolution ? screenHeight : screenHeight / 2);
 		//必须是 HDR（不能用阴影那种 R8）：它存的是**颜色**，反射亮度会超过 1
 		RenderTextureFormat format = hdr ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default;
 
@@ -166,8 +168,8 @@ public class ScreenSpaceReflection
 
 		ssrMaterial = settings.Material;//存下来：Draw 用它画那三趟，Dispose 负责销毁
 
-		//两张跨帧的双缓冲图 + 本帧的 blur 倒手图
-		AllocateTextures(buffer, screenWidth, screenHeight, hdr);
+		//两张跨帧的双缓冲图 + 本帧的 blur 倒手图（分辨率由设置里的 fullResolution 决定）
+		AllocateTextures(buffer, screenWidth, screenHeight, hdr, settings.fullResolution);
 
 		//把 _SSRTex 绑成"读"的那张（= **上一帧**追出来的结果，本帧的物体着色时会采它）
 		buffer.SetGlobalTexture(ssrTexId, ssrTextures[ssrReadIndex]);

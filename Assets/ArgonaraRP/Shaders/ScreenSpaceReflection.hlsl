@@ -112,6 +112,25 @@ float _SSRMarchFadeStrength;    //命中点越靠射线末端越淡的强度（0
 float _SSRRoughnessMipScale;
 float _SSRRoughnessMipBias;
 
+//=========================================================
+//====== Hi-Z（分层深度图）：追踪用它决定步长 ======
+//=========================================================
+//主图（带 mip 链，每级一个纹素 = 该块里"离相机最近"的深度）+ 可用级数上限，
+//都由 HierarchicalZ 每帧生成并上传（生成流程见那边；这里只负责用）。
+TEXTURE2D(_HiZTex);
+//可用的最高 mip 级：追踪里 clamp 用（再高的级别没写过数据）
+int _MaxHiZMipLevel;
+//本帧 HiZ 到底可不可用（1/0）。关掉时 C# 会把 _HiZTex 绑成 1×1 黑图（深度 0 = 无穷远），
+//那种情况下照着 Hi-Z 走会"永远不命中" ⇒ 必须靠它退回下面的线性步进 traceRay。
+float _HiZEnabled;
+
+//调试开关（**默认关**）：打开后追踪那趟不输出反射，改成按"射线为什么结束"染色 ——
+//  白=命中 / 红=走出屏幕 / 绿=越过相机平面 / 蓝=步数用光 / 黑=起点就没有面（天空）
+//  走到射线终点的三种细分：黄=没被截断且几乎走完整条（长度内真没东西） / 橙=没被截断但很早就结束（一步跨过终点）
+//                          品红=这条射线被近平面截断过（本来就短）
+//（排查"某块区域为什么没反射"用的；用完注释回去即可）
+//#define SSR_TRACE_DEBUG
+
 //命中点/接收面的**着色法线**（含法线贴图）：延迟读 GBuffer2，前向读 DepthNormals prepass 的法线图。
 //编码统一是 "normal * 0.5 + 0.5"，所以解码一样（和 ScreenSpacePCSS.shader 里那份一致）
 TEXTURE2D(_CameraNormalsTexture);
@@ -290,6 +309,220 @@ bool traceRay(float3 startVS, float3 reflectDirVS, out float2 hitPixel, out floa
     return intersected;
 }
 
+///Hi-Z 版追踪：入参/出参口径和 traceRay 完全一致（startVS 起点、reflectDirVS 方向；
+///命中给 hitPixel / marchPercent / hitZ）。
+///**但步进方式完全不同**：按 mip 级升降步长 ——
+///  这一步的远端点越过了该级存的"最近深度" ⇒ 可疑：mip0 时（落在 thickness 内）算命中，
+///  否则退回一步、mip-1 换更细的级；没越过 ⇒ 这一整块都没东西 ⇒ mip+1、步长翻倍（最多 _MaxHiZMipLevel）。
+///⇒ 所以它是**另一套循环**，和"等步长 + 末尾二分"的线性版没法合成一个 if（步长规则、状态、细化方式都不一样）。
+///该用哪个由调用方按 _HiZEnabled 二选一（见 TracePassFragment）。
+bool traceRayWithHiZ (float3 startVS, float3 reflectDirVS, out float2 hitPixel, out float marchPercent, out float hitZ,
+    out float3 traceDebug)
+{
+    //调试用（正常路径不影响，只是多写一个 out 变量）：
+    //白=命中、红=出屏、绿=过相机平面、蓝=步数用光；
+    //走到终点的细分：黄=没截断且走完整条、橙=没截断但很早结束、品红=被近平面截断过
+    traceDebug = 0;
+
+    //前半段和线性版 traceRay 一致：屏幕空间参数化 + 1/z 线性插值（透视投影下 1/z 沿屏幕上的直线是线性的）
+    float2 startSS = ViewToScreenUV(startVS);
+
+    //射线**截断到近平面**（两篇参考文章都有这一步，我们之前漏了）：
+    //朝相机飞的射线，终点可能落在相机背后 ⇒ ① ViewToScreenUV 的透视除法（除以≈0的 w）会给出垃圾 UV，
+    //步长/深度基准全乱；② 射线会在几步内把 z 跨过 0 ⇒ 下面"越过相机平面就 return false"整条毙掉。
+    //而步长越大越容易"一步跨过" ⇒ **mip 拉高之后成片丢反射，看着就是"图像被截断"**。
+    float maxDistance = _SSRTotalRayLength;
+    bool clamped = false;//调试用：这条射线有没有被近平面截断过
+    if (reflectDirVS.z > 1e-6)//只有"朝相机飞"（视空间 z 在变大）才可能捅到背后；同时避免除零
+    {
+        float endVSZ = startVS.z + reflectDirVS.z * maxDistance;
+        float nearVSZ = -_ProjectionParams.y;//近平面的视空间 z（负值）
+        if (endVSZ > nearVSZ)
+        {
+            maxDistance = (nearVSZ - startVS.z) / reflectDirVS.z;//缩到正好停在近平面
+            clamped = true;
+        }
+    }
+    float3 endVS = startVS + reflectDirVS * maxDistance;//射线总长（视空间米）
+    float2 endSS = ViewToScreenUV(endVS);
+
+    float2 bufferSizeXY = _CameraBufferSize.zw;
+    if (length(startSS - endSS) < min(1 / bufferSizeXY.x, 1 / bufferSizeXY.y))//两点太近就给终点补 xy 各一像素
+        endSS += 1 / bufferSizeXY;
+
+    //**Hi-Z 的基准步长固定 = 1 个像素**（`_SSRPixelStride` 那套是给线性版的：线性版靠"大步宽 + 深度窗口大"
+    //照样能判交，Hi-Z 不行 —— 当前级的格子只有 2^mip 像素宽，步长一旦超过一格，这一步跨过的中间那段
+    //根本没被采到 ⇒ mip 越高漏得越多 ⇒ 树冠/叶片成片丢）。1 像素起步、每升一级翻倍 ⇒ 步长 = 格子宽，
+    //"跨一格、看一格"，采到的那个格子正好盖住这一步走过的路。
+    //（"能看多远"由 mip 级数 + _SSRStepCountLimit 决定：空旷处每升一级步长就翻倍）
+    float2 deltaPixels = (endSS - startSS) * bufferSizeXY;
+    float pixelsPerStep = 1.0;
+    float screenSpan = max(abs(deltaPixels.x), abs(deltaPixels.y));
+    int baseStepCount = max((int)ceil(screenSpan / pixelsPerStep), 1);
+    float2 deltaSS = (endSS - startSS) / baseStepCount;
+
+    //深度一律取"视空间米、正值"（和线性版的 intersect 同一口径）：1/-z 是这里的线性量
+    float start1bz = 1.0 / -startVS.z;
+    float end1bz = 1.0 / -endVS.z;
+    float delta1bz = (end1bz - start1bz) / baseStepCount;
+    float total1bz = end1bz - start1bz;//整条射线在 1/z 上的跨度 ⇒ 用它反推"走了百分之多少"
+    float invTotal1bz = 1.0 / (abs(total1bz) > 1e-6 ? total1bz : 1e-6);
+
+    //起始抖动（和线性版同一个 4×4 表）：缓解"同一像素每帧都踩在同一个位置"的固定走样
+    float2 currentSS = startSS;
+    float current1bz = start1bz;
+    float jitter = JitterDither(startSS * bufferSizeXY);
+    currentSS += jitter * deltaSS;
+    current1bz += jitter * delta1bz;
+
+    hitZ = 0;	hitPixel = 0;	marchPercent = 1;//out 参数不会自动初始化，先把未命中时可能被读到的值定好
+
+    //射线**起点所在那个面的深度**（就是接收面自己）：用来识别"自交带"，见循环里那段
+    float startZ = -startVS.z;
+
+    float mipLevel = 0.0;
+    [loop]
+    for (int i = 0; i < _SSRStepCountLimit; i++)
+    {
+        //这一步跨多远：mip 每升 1 级，一个纹素覆盖的屏幕面积 ×4 ⇒ 步长 ×2
+        float stepScale = exp2(mipLevel);
+        //**这一步最多只能走到射线终点**：跨过去了就把它**缩到正好落在终点**（而不是把整步丢掉）。
+        //（1/z 沿射线是线性的 ⇒ "还差几个基准步" = (end1bz - current1bz) / delta1bz；
+        //  深度几乎不变（射线平行于视平面）时不夹，避免除零）
+        float stepsToEnd = (abs(delta1bz) > 1e-12) ? (end1bz - current1bz) / delta1bz : 1e6;
+        bool atRayEnd = stepsToEnd <= stepScale;
+        if (atRayEnd)
+        {
+            stepScale = max(stepsToEnd, 0.0);
+        }
+        float2 nextSS = currentSS + deltaSS * stepScale;
+        float next1bz = current1bz + delta1bz * stepScale;
+
+        //这一步两端点的视空间深度（米、正值）
+        float rayNearZ = 1.0 / current1bz;
+        float rayFarZ = 1.0 / next1bz;
+        //和线性版的 intersect 一样：深度在一步里可能变大也可能变小（朝相机飞的射线就在变小），
+        //先排一下序、保证"近端 ≤ 远端"，后面的判据才不会用反
+        if (rayNearZ > rayFarZ)
+        {
+            float swapZ = rayNearZ;
+            rayNearZ = rayFarZ;
+            rayFarZ = swapZ;
+        }
+
+        //**先判"这一步有没有跨过射线终点"**（终点已经按近平面截断过）：
+        //步长大时很容易一跨就跨过终点，而跨过终点之后 z 会翻到相机那一侧 ⇒
+        //下面那句"越过相机平面就 return false"会把**其实还没走到终点**的射线提前毙掉
+        //（实测：缺失区域大部分就是它 —— 染色里的"绿色"）。
+        //1/z 沿射线是单调的，所以用"和终点 1/z 的相对方向"判即可（两个方向都成立）。
+        if (!atRayEnd && (next1bz - end1bz) * (end1bz - start1bz) > 0)
+        {
+            //兜底（上面已经把步长夹到终点，正常到不了这里）
+            //调试细分（三种颜色，能看出"是谁把这条射线结束掉的"）：
+            //  品红 = 这条射线**被近平面截断过**（本来就短，眼睛看不到的内容）
+            //  黄   = 没被截断、而且**几乎走完了整条射线**（= 允许的长度内真的没东西）
+            //  橙   = 没被截断、但**很早就结束了**（= 一步跨过了终点 / 射线被别的原因截短）
+            float walked = saturate((current1bz - start1bz) * invTotal1bz);//这条走了整条射线的百分之多少
+            traceDebug = clamped ? float3(1, 0, 1)
+                : (walked > 0.9 ? float3(1, 1, 0) : float3(1, 0.5, 0));
+            return false;//已经走到（或越过）射线允许的终点
+        }
+
+        if (nextSS.x < 0 || nextSS.x > 1 || nextSS.y < 0 || nextSS.y > 1)
+        {
+            //走出屏幕：**先退档，再判死**。mip 大时"第一步就跨出屏幕"很常见（掠射的反射尤其容易），
+            //那种情况不该把整条射线放弃（否则屏幕边缘会整块丢反射）；
+            //缩小步长、退回来重试，只有连最细一级都还在往外走，才算真的取不到了。
+            if (mipLevel > 0.5)
+            {
+                mipLevel -= 1.0;
+                continue;
+            }
+            traceDebug = float3(1, 0, 0);//调试：红 = 终点走出屏幕（已退到最细一级）
+            return false;
+        }
+        if (rayFarZ <= 0)
+        {
+            //兜底：上面的"终点判据"应该已经挡掉了绝大多数情况（终点被截断在近平面之内）
+            traceDebug = float3(0, 1, 0);//调试：绿 = 越过相机平面
+            return false;//射线越过相机平面（背后那块画面不在屏幕上）
+        }
+
+        //采样点取这一步的**中点**，不是末端 —— 和线性版（currentSS + 0.5 * deltaSS）同一个口径。
+        //采末端时，看的是"前方一格"：命中位置天然比真实交点晚半步（物体边缘尤其明显）；采中点才
+        //落在这一步**之内**。⚠️ 代价是"判据锚点"跟着变了：原来 rayNearZ/rayFarZ 就是采样点的前后，
+        //现在采样点在中间 ⇒ mip0 的确认判据必须一起锚到采样点（见下），否则会多出提前半格的假命中。
+        float2 sampleSS = currentSS + deltaSS * (0.5 * stepScale);
+        float sample1bz = current1bz + 0.5 * delta1bz * stepScale;
+        float sampleZ = 1.0 / sample1bz;//射线在**采样点**处的视深度（判据要在同一个点上，见下面 mip0 那段）
+        //**每步采两格**（这一步的**中点** + **末端**）：一格的覆盖范围只有一格，而采样点落在这一格里的位置
+        //是随机的 ⇒ 只采一格时，对齐最差的地方这一步有**一半**没被采到，那半格里的东西就被当成"空"跳过去了
+        //（远处细长目标的反射因此表现为"条纹状缺失"，mip 越高条纹越宽）。两点相距半格 ⇒ 两格的覆盖互补，
+        //合起来一定盖住这一整步。代价 = 每轮多一次采样（**不多一轮迭代**）。
+        //取两者中**更近**的那个（ReverseZ：值大 = 近）当判据 ⇒ 偏保守（更容易降档），但不会漏。
+        float rawHiZMid = SAMPLE_TEXTURE2D_LOD(_HiZTex, sampler_point_clamp, sampleSS, mipLevel).r;
+        float rawHiZEnd = SAMPLE_TEXTURE2D_LOD(_HiZTex, sampler_point_clamp, nextSS, mipLevel).r;
+        float rawHiZ = max(rawHiZMid, rawHiZEnd);
+        //那一块里"离相机最近"的表面深度（保守 ⇒ 说"这块没东西"就真的没东西）
+        float surfaceZ = LinearEyeDepth(rawHiZ, _ZBufferParams);
+
+        //**自交带**：射线是从接收面本身出发的，而掠射时它几乎**贴着接收面飞** —— 起点周围十几像素内
+        //采到的"面"就是接收面自己（深度和射线只差不到一个厚度）⇒ 判它命中就是"反射到自己身上"：
+        //取到接收面自己的颜色（亮的地方就是白点），该有反射的地方反射反而没了；而且这个判据是刀刃式的
+        //（差之毫厘就翻面）⇒ 逐像素乱跳 = 频闪。实测证据：把厚度拉到极小，真反射大片消失、这些白点却还在
+        //（说明它们的深度差≈0，厚度根本管不到）；而且它正好集中在掠射朝向（那会儿自交带最长）。
+        //⇒ 射线在**深度**上离开起点超过一个厚度之前，这一带一律当"空"：不判命中、也不降档，升档往外飞。
+        bool inSelfBand = abs(sampleZ - startZ) <= _SSRPixelThickness;
+
+        if (rayFarZ > surfaceZ && !inSelfBand)//这一步的远端越过了这一块里最近的表面 ⇒ 可能碰到了
+        {
+            if (mipLevel > 0.5)
+            {
+                mipLevel -= 1.0;//还有更细的级：这一步不算数、退回起点、降一级重走
+                continue;
+            }
+            //已经是最细一级：判据**两端都锚在采样点**，窗口宽度只有"厚度"这一个量：
+            //  射线在采样点处已经越过表面（sampleZ > surfaceZ），且越过的量不超过厚度。
+            //⚠️ 上界不能用 rayFarZ（步子远端）、下界不能用 rayNearZ（步子起点）：掠射时这一步的深度跨度
+            //   可以非常大（近地平线处尤甚），窗口被撑大 ⇒ 一路上但凡被采到的面都"落进窗口" ⇒ 假命中，
+            //   而且采样点被抖动挪一格就翻面 ⇒ 频闪（实测：白频闪正好集中在掠射朝向）。
+            //⚠️ 代价：一步里深度跨得比厚度还快的交点会漏（真掠射那种）；要它就得把厚度调大一点。
+            if (sampleZ > surfaceZ && surfaceZ > sampleZ - _SSRPixelThickness)
+            {
+                //⚠️ 这里曾经试过"在这一步内做 6 次二分"把命中位置细化到亚像素（照搬线性版那套），
+                //   实测**看不出区别** ⇒ 已回退。原因是区间太小（半步 = 半个 trace 像素 = 1 个全分辨率像素），
+                //   而且反射内容的"台阶"来自**追踪整体是半分辨率**（每个 trace 像素盖 2×2 全屏像素），
+                //   亚像素细化只挪 1 个像素，改变不了内容的分辨率上限。真要更细只能提高追踪分辨率。
+                hitPixel = sampleSS;
+                //进度直接取 1/z 上的参数（用**采样点**，不是步子末端）：它就是"走了整条射线的百分之多少"
+                marchPercent = saturate((current1bz + 0.5 * delta1bz * stepScale - start1bz) * invTotal1bz);
+                hitZ = surfaceZ;
+                traceDebug = float3(1, 1, 1);//调试：白 = 命中
+                return true;
+            }
+            //最细一级但不在厚度内（多半是这一步直接穿过去了）：继续往前小步走
+        }
+        else
+        {
+            //这一整块都没东西（或者还在自交带里）⇒ 放心大步走：升一级（步长翻倍，最多 _MaxHiZMipLevel）
+            mipLevel = min(mipLevel + 1.0, (float)_MaxHiZMipLevel);
+        }
+
+        //这一步已经是"贴着终点"的最后一步：在终点查过、没命中就收工（不这样的话会继续跑到射线长度之外）
+        if (atRayEnd)
+        {
+            traceDebug = float3(1, 1, 0);//调试：黄 = 走完了整条射线
+            return false;
+        }
+
+        currentSS = nextSS;
+        current1bz = next1bz;
+    }
+
+    traceDebug = float3(0, 0, 1);//调试：蓝 = 步数用光、循环自然结束
+    return false;
+}
+
 //命中的"可信度"（四项淡出），返回值当 alpha 用：0 = 别用这次命中，1 = 完全相信
 float alphaCalc(float3 rayDirection, float2 hitPixel, float marchPercent, float hitZ)
 {
@@ -375,11 +608,30 @@ float4 TracePassFragment (Varyings input) : SV_Target
     float3 viewDirVS = normalize(startVS);//相机(0,0,0) → 表面点
     float3 reflectDirVS = normalize(reflect(viewDirVS, normalVS));
 
-    //3.沿反射方向在屏幕空间步进找交点
+    //3.沿反射方向在屏幕空间步进找交点：优先用 Hi-Z（按 mip 升降步长，同样的步数能走得更远）；
+    //   HiZ 关掉/不可用时退回线性步进（_HiZEnabled 由 HierarchicalZ 每帧上传，见那边）。
+    //   ⚠️ 用 if/else 而不是三目：两个函数都往同一组 out 参数里写，三目在 HLSL 里可能两边都求值。
     float2 hitPixel;
     float marchPercent;
     float hitZ;
-    if (!traceRay(startVS, reflectDirVS, hitPixel, marchPercent, hitZ))
+    float3 traceDebug = 0;//调试用（见文件头的 SSR_TRACE_DEBUG 说明）
+    bool hit;
+    if (_HiZEnabled > 0.5)
+    {
+        hit = traceRayWithHiZ(startVS, reflectDirVS, hitPixel, marchPercent, hitZ, traceDebug);
+    }
+    else
+    {
+        hit = traceRay(startVS, reflectDirVS, hitPixel, marchPercent, hitZ);
+    }
+
+    #if defined(SSR_TRACE_DEBUG)
+        //调试：不输出反射，直接把"这条射线为什么结束"画出来
+        //（白=命中 / 红=走出屏幕 / 绿=越过相机平面 / 蓝=步数用光 / 黑=起点就没有面）
+        return float4(traceDebug, 1.0);
+    #endif
+
+    if (!hit)
     {
         return 0.0;
     }

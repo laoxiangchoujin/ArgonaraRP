@@ -6,6 +6,12 @@ public class SSRSettings
     //总开关：关掉时渲染器既不创建SSR的RT、也不画SSR，等于完全不存在
     public bool enabled = false;
 
+    //追踪分辨率：关 = 半分辨率（默认，省 4 倍像素）；开 = 全分辨率。
+    //反射内容的分辨率上限就由它决定（半分辨率时高频边缘必然是 2 像素级台阶，亚像素细化也救不回来）。
+    //⚠️ 翻转会**重建**两张跨帧反射图 + 本帧的 blur 倒手图，而且显存/带宽、trace 的像素数都是 ×4。
+    [Tooltip("全分辨率追踪：关=半分辨率（快，默认）；开=反射内容更细，但反射图显存/带宽和 trace 像素数都 ×4")]
+    public bool fullResolution = false;
+
     //=============================== 追踪（trace）===============================
     [Header("追踪设置")]
     //射线总长（视空间米）：没碰到东西就在这个长度内一直步进
@@ -58,6 +64,11 @@ public class SSRSettings
     [Range(0f, 10f)] public float roughnessMipScale = 5f;
     [Tooltip("粗糙度→mip 的整体平移：正=更糊、负=更清。微调用，一般 0")]
     [Range(-3f, 3f)] public float roughnessMipBias = 0f;
+
+    //=============================== Hi-Z（分层深度图）===============================
+    //SSR 的追踪靠它决定步长（安全就升 mip、碰到就退一级）。
+    //挂在 SSR 设置里而不是管线asset顶层：目前只有 SSR 用它；以后 SSAO 等也要用时再往上提。
+    public HierarchicalZSettings hiz = new HierarchicalZSettings();
 
     //SSR用的shader（ScreenSpaceReflection.shader）：追踪 + 两趟模糊，靠pass索引被DrawProcedural调用。
     //放在这个类里而不是管线asset顶层：它只服务于SSR这一个特性，跟着SSR的设置一起走（PCSS那个同理）

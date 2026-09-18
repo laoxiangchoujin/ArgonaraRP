@@ -14,7 +14,8 @@
 //所以两边的顺序**必须完全一致**，改一边就得同步改另一边：
 //  0 = Trace（追踪）    1 = BlurHorizontal    2 = BlurVertical
 //
-//两张图由 C# 决定（**跨帧持久的双缓冲**，两帧轮换）：_SSRTex / _SSRTex_TempBlur 都是半分辨率、HDR。
+//两张图由 C# 决定（**跨帧持久的双缓冲**，两帧轮换）：_SSRTex / _SSRTex_TempBlur 都是 HDR，
+//分辨率看 SSRSettings.fullResolution（默认半分辨率，可切全分辨率）。
 //所有 fragment 函数体都写在 ScreenSpaceReflection.hlsl 里，这里只留 pass 名和 #pragma。
 Shader "Hidden/ArgonaraRP/Screen Space Reflection"
 {
