@@ -39,7 +39,8 @@ public partial class CameraRendererForward : CameraRendererBase
     ///绘制相机能看到的所有几何图形
     public override void Render(ScriptableRenderContext context, Camera camera, CameraBufferSettings bufferSettings,
         bool useDynamicBatching, bool useGPUInsancing, bool useLightsPerObject,
-        ShadowSettings shadowSettings, SSRSettings ssrSettings, PostFXSettings postFXSettings, int colorLUTResolution)
+        ShadowSettings shadowSettings, SSRSettings ssrSettings, PostFXSettings postFXSettings, int colorLUTResolution,
+        TemporalAntiAliasingSettings taaSettings)
     {
         //ssrSettings：转给 Setup（那边交给 ScreenSpaceReflection 处理：判定/建图/绑 _SSRTex/传参）
         this.context = context;
@@ -66,6 +67,14 @@ public partial class CameraRendererForward : CameraRendererBase
         if (ScreenSpaceReflection.ShouldRender(ssrSettings, camera))
         {
             useColorTexture = true;
+            useDepthTexture = true;
+        }
+
+        //TAA 的重投影也要读深度（shader 里采 _CameraDepthTexture）⇒ 同样强制打开深度拷贝；
+        //不打开的话全局绑的是 missingTexture 占位灰图 ⇒ 重投影全错（画面糊/拖影）
+        //（延迟那边不用管：它的 CopyDepthAttachments 是无条件跑的）
+        if (TemporalAntiAliasing.ShouldRender(taaSettings, camera))
+        {
             useDepthTexture = true;
         }
         
@@ -110,7 +119,7 @@ public partial class CameraRendererForward : CameraRendererBase
         postFXStack.Setup(context, camera, bufferSize, postFXSettings, useHDR, colorLUTResolution, cameraSettings.finalBlendMode, bufferSettings.bicubicRescaling);
         buffer.EndSample(SampleName);
         
-        Setup(shadowSettings, ssrSettings);//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程   //第二个beginSample
+        Setup(shadowSettings, ssrSettings, taaSettings);//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程   //第二个beginSample
         DrawVisibleGeometry(useDynamicBatching, useGPUInsancing, useLightsPerObject,
             cameraSettings.renderingLayerMask);
         DrawUnsupportedShaders();
@@ -118,6 +127,20 @@ public partial class CameraRendererForward : CameraRendererBase
         //lighting.Cleanup();//在提交之前，清空shadowmap
 
         DrawGizmosBeforeFX();//gizmos要区分在后处理前后有不一样
+
+        //=== TAA：本帧颜色 + 上一帧历史 → 混合结果写回颜色附件（后处理 / DrawFinal 接着用它）===
+        //放在"场景全部画完 + gizmos 之后、后处理之前"：① 此刻颜色附件是全画好的；② 深度附件还在（重投影要用）；
+        //③ 后处理 / DrawFinal 依旧拿 colorAttachmentId 当输入 ⇒ 它们不用改。
+        //⚠️ gizmos 必须在它之前（gizmos 要深度测试，而 TAA 结尾的 blit 会把深度附件解绑）
+        if (useTAA)
+        {
+            //（要传 camera：TAA 的状态是**每个相机一份**，同一个渲染器实例被多台相机轮流用）
+            taa.Draw(buffer, camera, colorAttachmentId, depthAttachmentId);
+            taa.Cleanup(buffer, camera);//换双缓冲索引 + 把本帧 VP 存成"上一帧 VP"（必须在 Draw 之后）
+            ExecuteBuffer();//让写回的颜色立刻生效
+            buffer.name = bufferName;//恢复缓冲区名（Draw 里那趟改成了 "Temporal Anti Aliasing"）
+        }
+
         if (postFXStack.IsActive)
         {
             postFXStack.Render(colorAttachmentId);//后处理确实在后边啊
@@ -130,8 +153,11 @@ public partial class CameraRendererForward : CameraRendererBase
         DrawGizmosAfterFX();//这部分gizmos，在后处理后，此时它始终不被物体遮挡，好像是因为没有场景深度了，没法做深度测试
         
         Cleanup();
-        
+
         Submit(); //第二个endSample
+        //⚠️ 还原**必须放在 Submit 之后**：SRP 的命令是排队执行的，`SetupCameraProperties` 真正去读相机矩阵是在 Submit 的时候
+        //（放在 Submit 之前就还原 = 整帧还是用未抖动的矩阵画 ⇒ 抖动白给、TAA 攒不起来）
+        RestoreProjection();
     }
 
     CullingResults cullingResults;
@@ -198,11 +224,42 @@ public partial class CameraRendererForward : CameraRendererBase
     //  Draw：紧挨着 ssr.Draw 之前（此刻深度图完整、反射源也齐了）
     HierarchicalZ hiz = new HierarchicalZ();
 
+    //=========================== TAA（时域抗锯齿）===========================
+    //时序：**抖动**要在 SetupCameraProperties 之前注入投影矩阵（见 Setup 开头）；建历史图 + 传参跟着 ssr/hiz 一起。
+    TemporalAntiAliasing taa = new TemporalAntiAliasing();
+    bool useTAA;
+    //本帧的**原始**投影矩阵（抖完要还回去：不还的话抖动会一帧帧叠上去）
+    Matrix4x4 originalProjection;
+    bool projectionJittered;
+
+    //TAA 抖过投影矩阵的话，帧末把它还原（必须在所有绘制都提交之后）
+    //⚠️ 用 ResetProjectionMatrix（= 重新按 fov/aspect/近远平面算）而不是"把存下来的值再赋回去"：
+    //   一旦给 camera.projectionMatrix 赋过值，这台相机就被标记成"用自定义投影矩阵"，
+    //   之后再改 fov 或改窗口比例都**不会**重算 ⇒ 必须 Reset 才能回到"自动"状态（本项目没有别处自定义主相机投影）。
+    void RestoreProjection ()
+    {
+        if (projectionJittered)
+        {
+            camera.ResetProjectionMatrix();
+            projectionJittered = false;
+        }
+    }
+
     private static int bufferSizeId = Shader.PropertyToID("_CameraBufferSize");//因为unity默认提供的_ScreenParams数值不会随我们的渲染缩放调整，需要自己传值替代
     
     ///将相机的属性应用于上下文context
-    void Setup(ShadowSettings shadowSettings, SSRSettings ssrSettings)
+    void Setup(ShadowSettings shadowSettings, SSRSettings ssrSettings, TemporalAntiAliasingSettings taaSettings)
     {
+        //=== TAA 抖动：**必须**在 SetupCameraProperties 之前注入 ===
+        //那个函数就是拿 camera.projectionMatrix 去算 unity_MatrixVP 的 ⇒ 先注入，VP / unity_MatrixInvVP 自动都是抖过的、口径一致。
+        useTAA = TemporalAntiAliasing.ShouldRender(taaSettings, camera);
+        originalProjection = camera.projectionMatrix;//先存原值（GetJitteredProjection 内部也用它算）
+        projectionJittered = useTAA;
+        if (useTAA)
+        {
+            camera.projectionMatrix = taa.GetJitteredProjection(camera, bufferSize.x, bufferSize.y);
+        }
+
         context.SetupCameraProperties(camera); //渲染前设置正确的相机矩阵unity_MatrixVP
         //手动设置 unity_MatrixInvVP（SetupCameraProperties 可能不设它）：屏幕空间阴影要用它从深度重建世界坐标
         Matrix4x4 view = camera.worldToCameraMatrix;
@@ -228,11 +285,17 @@ public partial class CameraRendererForward : CameraRendererBase
         //HiZ：同样**每帧都调**（不走时在里面释放主图 + 绑黑图兜底）。useSSR 为假就不用建它（眼下只有 SSR 会用）
         hiz.Setup(buffer, ssrSettings?.hiz, useSSR, bufferSize.x, bufferSize.y);
 
+        //TAA：和 SSR 一个套路（**每帧都调**）：建/重建两张持久历史图 + 上传参数；关掉那帧释放两张历史图。
+        //重投影用的 VP 传**未抖动**的那份：shader 里已经 `uv -= _TAAJitter` 回到未抖动坐标，两边别都补。
+        taa.Setup(buffer, taaSettings, useTAA, camera, bufferSize.x, bufferSize.y, useHDR,
+            GL.GetGPUProjectionMatrix(originalProjection, true) * camera.worldToCameraMatrix);
+
         CameraClearFlags flags = camera.clearFlags;//它有4个值，1~4是Skybox,Color,Depth,Nothing，
 
         //屏幕空间阴影需要"可读的深度"和自己的RT，所以也强制走中间缓冲
+        //TAA 同理：它要"读颜色附件、写回颜色附件"，画到屏幕上就没得读了 ⇒ 也强制走中间缓冲
         useIntermediateBuffer = useScaleRendering || 
-                                useColorTexture || useDepthTexture || postFXStack.IsActive || useScreenSpaceShadow;
+                                useColorTexture || useDepthTexture || postFXStack.IsActive || useScreenSpaceShadow || useTAA;
         if (useIntermediateBuffer)//若要执行FX堆栈，则需要获取帧缓冲
         {
             if (flags > CameraClearFlags.Color)//color是2，只清depth或什么都不清是3或4
@@ -673,10 +736,18 @@ public partial class CameraRendererForward : CameraRendererBase
         missingTexture.Apply(true, true);
     }
 
+    ///外部（管线）要求"下一帧丢掉历史"：转给 TAA，它会给**所有相机**打上重置标记
+    public override void RequestResetHistory ()
+    {
+        taa.RequestResetHistory();
+    }
+
     public override void Dispose()
     {
         ssr.Dispose();//两张持久的反射图（跨帧的，得自己销毁）+ SSR 的材质
         hiz.Dispose();//HiZ 的主图（跨帧常驻的）+ 它的材质
+        taa.Dispose();//TAA 的两张历史图（跨帧的）+ 它的材质
+        RestoreProjection();//保险：万一中途 return，别把抖过的矩阵留在相机上
         CoreUtils.Destroy(material);
         CoreUtils.Destroy(screenSpaceShadowMaterial);
         CoreUtils.Destroy(missingTexture);

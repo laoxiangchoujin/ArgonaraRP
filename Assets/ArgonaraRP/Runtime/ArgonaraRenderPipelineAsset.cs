@@ -35,6 +35,10 @@ public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPip
     
     [SerializeField]
     PostFXSettings postFXSettings = default;
+
+    //时域抗锯齿（TAA）：抖动投影矩阵 + 混合历史帧。shader 引用跟着它走（同 SSR/PCSS 一个套路）
+    [SerializeField]
+    TemporalAntiAliasingSettings temporalAntiAliasing = default;
     
     public enum ColorLUTResolution {_16 = 16, _32 = 32, _64 = 64}
     
@@ -50,6 +54,6 @@ public class ArgonaraRenderPipelineAsset : RenderPipelineAsset<ArgonaraRenderPip
     protected override RenderPipeline CreatePipeline()
     {
         return new ArgonaraRenderPipeline(cameraRendererType, cameraBuffer, useDynamicBatching, useGPUInstancing, useSRPBatcher, 
-            useLightsPerObject, shadows, postFXSettings, (int)colorLUTResolution, cameraRendererShader, ssr);
+            useLightsPerObject, shadows, postFXSettings, (int)colorLUTResolution, cameraRendererShader, ssr, temporalAntiAliasing);
     }
 }

@@ -49,3 +49,12 @@
   灯侧逐灯 `_LightLayerMask` uniform，判定在像素着色器；全屏光照 pass 是**逐灯**不是逐层；stencil 只放材质位 + `StencilLight`。
   **HDRP** 渲染层放 GBuffer 的 A 通道（Light Layer），stencil 被 unlit/deferred/SSS/SSR/decal/motion vector 占满。
   ⇒ **两家都不用 stencil 存渲染层**（"URP 用 stencil 存渲染层"曾是错误说法，已作废）。
+
+## TAA（2026-09-21 移植完成、已出效果）
+- `Runtime/TemporalAntiAliasing.cs` + `Shaders/TemporalAntiAliasing.shader`（单文件单 pass；素材 = 用户给的 built-in 版 `TAA张亚坤.shader`）。
+  **状态每个相机一份**（Game/Scene 各自攒；反射/预览相机排除）。本版是"仅重投影"，运动矢量那套留在 `//#define TAA_MOTION_VECTORS` 开关里。
+- **两条必守的时序铁律**：① 抖动注入在 `SetupCameraProperties` **之前**；② 还原 `camera.projectionMatrix` 在 `Submit()` **之后**
+  （Submit 之前还原 ⇒ 整帧未抖动 ⇒ 表现为"无 AA + 历史错配的糊"）。
+- 历史 uv = 重投影 + `+= _TAAJitter`（不加回抖动 = 每帧落在不同亚像素偏移处 ⇒ 反馈回路里每帧低通 ⇒ 糊）。
+- 名字坑：SRP core 的 `Color.hlsl` 已有 `RGBToYCoCg`/`YCoCgToRGB` ⇒ 我们的叫 `TaaRGBToYCoCg`/`TaaYCoCgToRGB`。
+- 未做：运动矢量（动的东西会拖）、锐化（`sharpenStrength` 上传了没接）、TAA 在后处理**之前**（非教程的 tonemap 之后）。

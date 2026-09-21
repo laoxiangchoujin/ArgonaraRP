@@ -84,6 +84,12 @@ MonoBehaviour:
     hizRayOffset: 0.01
     shader: {fileID: 4800000, guid: ce2eb3678f384034c8aef18a989cca1a, type: 3}
   postFXSettings: {fileID: 11400000, guid: 80dc71d8e864e284581e4ac8f8a23efe, type: 2}
+  temporalAntiAliasing:
+    enabled: 1
+    blendFactor: 0.05
+    motionBlendScale: 100
+    sharpenStrength: 0.005
+    shader: {fileID: 4800000, guid: cb76f8f2de3d5d14abb6a482149773a8, type: 3}
   colorLUTResolution: 32
   cameraRendererShader: {fileID: 4800000, guid: 01c9380ab1418fd44a02e56b2677bee5,
     type: 3}

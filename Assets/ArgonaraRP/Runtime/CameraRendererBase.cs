@@ -5,9 +5,14 @@ public abstract class CameraRendererBase
 {
 	public abstract void Render(ScriptableRenderContext context, Camera camera, CameraBufferSettings bufferSettings,
 		bool useDynamicBatching, bool useGPUInsancing, bool useLightsPerObject,
-		ShadowSettings shadowSettings, SSRSettings ssrSettings, PostFXSettings postFXSettings, int colorLUTResolution);
+		ShadowSettings shadowSettings, SSRSettings ssrSettings, PostFXSettings postFXSettings, int colorLUTResolution,
+		TemporalAntiAliasingSettings taaSettings);
 
 	public abstract void Dispose();
+
+	///外部要求"下一帧丢掉历史"（例如切场景：相机没动但画面全换了，靠瞬移判定抓不到）。
+	///由管线在场景事件里调；目前只有 TAA 需要它。
+	public abstract void RequestResetHistory();
 
 
 	//=========================== 颜色快照的 mip 链 ===========================

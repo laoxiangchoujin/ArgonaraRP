@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.SceneManagement;
 
 public partial class ArgonaraRenderPipeline : RenderPipeline
 {
@@ -14,13 +15,15 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
     SSRSettings ssrSettings;
 
     PostFXSettings postFXSettings;
-    
+
+    TemporalAntiAliasingSettings taaSettings;
+
     int colorLUTResolution;
     
     //构造函数
     public ArgonaraRenderPipeline(ArgonaraRenderPipelineAsset.CameraRendererType cameraRenderType, CameraBufferSettings cameraBufferSettings, bool useDynamicBatching, bool useGPUInstancing, bool useSRPBatcher,
         bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings, int colorLUTResolution,
-        Shader cameraRendererShader, SSRSettings ssrSettings)
+        Shader cameraRendererShader, SSRSettings ssrSettings, TemporalAntiAliasingSettings taaSettings)
     {
         //this.allowHDR = allowHDR;
         this.cameraBufferSettings = cameraBufferSettings;
@@ -31,6 +34,7 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
         this.useLightsPerObject = useLightsPerObject;
         this.shadowSettings = shadowSettings;
         this.ssrSettings = ssrSettings;
+        this.taaSettings = taaSettings;
         this.postFXSettings = postFXSettings;
         this.colorLUTResolution = colorLUTResolution;
 
@@ -42,7 +46,28 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
             ? forwardRenderer
             : new CameraRendererDeferred(cameraRendererShader, screenSpaceShadowShader);
 
+        //切场景/卸场景：画面内容整个换了，但**相机没动** ⇒ TAA 的"瞬移判定"抓不到，必须显式让它丢历史
+        SceneManager.activeSceneChanged += OnActiveSceneChanged;
+        SceneManager.sceneUnloaded += OnSceneUnloaded;
+
         InitializeForEditor();
+    }
+
+    void OnActiveSceneChanged (Scene from, Scene to)
+    {
+        RequestResetHistory();
+    }
+
+    void OnSceneUnloaded (Scene scene)
+    {
+        RequestResetHistory();
+    }
+
+    //让两个渲染器（前向实例也管反射相机）都把 TAA 的历史标记成"下一帧不要混"
+    void RequestResetHistory ()
+    {
+        renderer?.RequestResetHistory();
+        forwardRenderer?.RequestResetHistory();
     }
 
     CameraRendererBase renderer;// = new CameraRenderer(); //它大致相当于URP的scriptable renderer
@@ -57,13 +82,15 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
                 : renderer;
             r.Render(context, camera, cameraBufferSettings,
                 useDynamicBatching, useGPUInstancing, useLightsPerObject, 
-                shadowSettings, ssrSettings, postFXSettings, colorLUTResolution);
+                shadowSettings, ssrSettings, postFXSettings, colorLUTResolution, taaSettings);
         }
     }
 
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
+        SceneManager.activeSceneChanged -= OnActiveSceneChanged;//静态事件必须退订，否则旧管线实例会被一直抓着
+        SceneManager.sceneUnloaded -= OnSceneUnloaded;
         DisposeForEditor();
         renderer.Dispose();
         forwardRenderer.Dispose();
