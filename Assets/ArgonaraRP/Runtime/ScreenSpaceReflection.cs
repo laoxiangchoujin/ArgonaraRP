@@ -12,8 +12,11 @@ public class ScreenSpaceReflection
 		ssrStepCountLimitId = Shader.PropertyToID("_SSRStepCountLimit"),
 		ssrNearStepBoldenRangeId = Shader.PropertyToID("_SSRNearStepBoldenRange"),
 		ssrPixelThicknessId = Shader.PropertyToID("_SSRPixelThickness"),
+		ssrRayOffsetId = Shader.PropertyToID("_SSRRayOffset"),
+		binarySearchCountlimitId = Shader.PropertyToID("_BinarySearchCountLimit"),
 		ssrBackRayFadeWidthId = Shader.PropertyToID("_SSRBackRayFadeWidth"),
-		ssrScreenEdgeFadeStartId = Shader.PropertyToID("_SSRScreenEdgeFadeStart"),
+		ssrEdgeFadeScaleId = Shader.PropertyToID("_SSREdgeFadeScale"),
+		ssrEdgeFadeAttenuationId = Shader.PropertyToID("_SSREdgeFadeAttenuation"),
 		ssrMarchFadeStrengthId = Shader.PropertyToID("_SSRMarchFadeStrength"),
 		ssrIntensityId = Shader.PropertyToID("_SSRIntensity"),
 		ssrRoughnessMipScaleId = Shader.PropertyToID("_SSRRoughnessMipScale"),
@@ -30,9 +33,12 @@ public class ScreenSpaceReflection
 		buffer.SetGlobalInt(ssrStepCountLimitId, ssrSettings.stepCountLimit);
 		buffer.SetGlobalFloat(ssrNearStepBoldenRangeId, ssrSettings.nearStepBoldenRange);
 		buffer.SetGlobalFloat(ssrPixelThicknessId, ssrSettings.pixelThickness);
+		buffer.SetGlobalFloat(ssrRayOffsetId, ssrSettings.hizRayOffset);
+		buffer.SetGlobalFloat(binarySearchCountlimitId, ssrSettings.binarySearchCountlimit);
 		//命中后的淡出
 		buffer.SetGlobalFloat(ssrBackRayFadeWidthId, ssrSettings.backRayFadeWidth);
-		buffer.SetGlobalFloat(ssrScreenEdgeFadeStartId, ssrSettings.screenEdgeFadeStart);
+		buffer.SetGlobalFloat(ssrEdgeFadeScaleId, ssrSettings.edgeFadeScale);
+		buffer.SetGlobalFloat(ssrEdgeFadeAttenuationId, ssrSettings.edgeFadeAttenuation);
 		buffer.SetGlobalFloat(ssrMarchFadeStrengthId, ssrSettings.marchFadeStrength);
 		//合成/质量
 		buffer.SetGlobalFloat(ssrIntensityId, ssrSettings.intensity);

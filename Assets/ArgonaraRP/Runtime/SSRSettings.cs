@@ -17,7 +17,7 @@ public class SSRSettings
     //射线总长（视空间米）：没碰到东西就在这个长度内一直步进
     [Range(0.1f, 200f)] public float totalRayLength = 32f;
     //每步跨多少屏幕像素：越大越快、越容易漏交
-    [Range(0.5f, 8f)] public float pixelStride = 4f;
+    [Range(0.5f, 20f)] public float pixelStride = 4f;
     //步数上限：防止 stride 设得太小时步数爆炸（一般不会）
     [Range(8, 256)] public int stepCountLimit = 64;
     //近处放宽步长的生效距离（米）：表面离相机越近步长越宽（最多×2），超过它按基准步长走
@@ -25,14 +25,22 @@ public class SSRSettings
     //深度厚度（视空间米）：判交用的"物体有多厚"。太小会断带（一步跨过整个物体），太大会把更远的背景也算成命中
     [Range(0.0001f, 5f)] public float pixelThickness = 0.15f;
 
+    [Range(2f, 10f)] public int binarySearchCountlimit = 6;
+
     //=============================== 命中后的淡出（alphaCalc）===============================
     [Header("命中后的淡出和强度")]
     //反射方向朝相机时的淡出宽度：viewZ≤0 全亮，越朝相机飞来(viewZ越正)越淡，到该值时完全消失
     [Range(0.01f, 1f)] public float backRayFadeWidth = 0.2f;
-    //屏幕边缘淡出的起点：屏幕中心=0、边缘=1 的归一化半径，超过它开始淡出，到边缘正好淡到 0
-    [Range(0.5f, 0.99f)] public float screenEdgeFadeStart = 0.9f;
+
     //命中点越靠射线末端越淡的强度：0=完全不衰减，1=原来的效果
     [Range(0f, 1f)] public float marchFadeStrength = 1f;
+    
+    //暗角式屏幕边缘淡出（照毅毅文章那套，替代了原来的"方形 + 开始淡出的阈值"）：
+    //  · scale：离屏幕中心距离的倍率（原始 1.8）。屏幕边框上 ≈0.9 ⇒ 基本已淡没；削太多就调小（1.4 左右）
+    //  · attenuation：距离的整形幂（原始 1）；>1 就更集中在中心才开始淡
+    [Range(0.5f, 3f)] public float edgeFadeScale = 1.8f;
+    [Range(0.1f, 4f)] public float edgeFadeAttenuation = 1f;
+    
 
     //（原版还有个 _SSRReflectionRoughness：那是环境反射fallback用的粗糙度。本项目的合成放在接收面/水面，
     //  所以那个参数归接收面自己管，不在这里）
@@ -69,6 +77,7 @@ public class SSRSettings
     //SSR 的追踪靠它决定步长（安全就升 mip、碰到就退一级）。
     //挂在 SSR 设置里而不是管线asset顶层：目前只有 SSR 用它；以后 SSAO 等也要用时再往上提。
     public HierarchicalZSettings hiz = new HierarchicalZSettings();
+    [Range(0f, 0.5f)] public float hizRayOffset = 0.01f;
 
     //SSR用的shader（ScreenSpaceReflection.shader）：追踪 + 两趟模糊，靠pass索引被DrawProcedural调用。
     //放在这个类里而不是管线asset顶层：它只服务于SSR这一个特性，跟着SSR的设置一起走（PCSS那个同理）

@@ -101,10 +101,13 @@ float4 BlurVerticalPassFragment (Varyings input) : SV_Target
 float _SSRTotalRayLength;       //射线总长（视空间米）：没碰到东西就在这个长度内一直步进
 float _SSRPixelStride;          //每步跨多少屏幕像素：越大越快、越容易漏交
 int _SSRStepCountLimit;         //步数上限：防止 stride 太小时步数爆炸
+int _BinarySearchCountLimit;
 float _SSRNearStepBoldenRange;  //近处放宽步长的生效距离（米）：越近步长越宽（最多×2）
 float _SSRPixelThickness;       //深度厚度（视空间米）：判交用的"物体有多厚"
+float _SSRRayOffset;            //起点沿法线抬起的距离（视空间米）：治自交。0.01 量级（太大 ⇒ "钳制范围"，太小 ⇒ 自反射）
 float _SSRBackRayFadeWidth;     //反射方向朝相机时的淡出宽度
-float _SSRScreenEdgeFadeStart;  //屏幕边缘淡出的起点（屏幕中心=0、边缘=1）
+float _SSREdgeFadeScale;        //暗角式屏幕边缘淡出：离屏幕中心的距离倍率（原始值 1.8）
+float _SSREdgeFadeAttenuation;  //暗角式屏幕边缘淡出：距离的整形幂（原始值 1）
 float _SSRMarchFadeStrength;    //命中点越靠射线末端越淡的强度（0=不衰减）
 
 //粗糙度→mip：反射色按"接收面粗糙度"取颜色快照的 mip 级（越粗糙越糊 ⇒ 命中点抖动/闪点被平均掉）。
@@ -278,7 +281,7 @@ bool traceRay(float3 startVS, float3 reflectDirVS, out float2 hitPixel, out floa
 
             //两次步进中间差多少，不是简单相加除二，而是看单次步进距离被投射到 z 轴有多长，再除二
             [loop]
-            for (int j = 0; j < 6; j++)
+            for (int j = 0; j < _BinarySearchCountLimit; j++)
             {
                 float2 deltaSSInBinary = rightSS - leftSS;
                 float delta1bzInBinary = right1bz - left1bz;
@@ -316,7 +319,7 @@ bool traceRay(float3 startVS, float3 reflectDirVS, out float2 hitPixel, out floa
 ///  否则退回一步、mip-1 换更细的级；没越过 ⇒ 这一整块都没东西 ⇒ mip+1、步长翻倍（最多 _MaxHiZMipLevel）。
 ///⇒ 所以它是**另一套循环**，和"等步长 + 末尾二分"的线性版没法合成一个 if（步长规则、状态、细化方式都不一样）。
 ///该用哪个由调用方按 _HiZEnabled 二选一（见 TracePassFragment）。
-bool traceRayWithHiZ (float3 startVS, float3 reflectDirVS, out float2 hitPixel, out float marchPercent, out float hitZ,
+bool traceRayWithHiZ (float3 startVS, float3 reflectDirVS, float3 normalVS, out float2 hitPixel, out float marchPercent, out float hitZ,
     out float3 traceDebug)
 {
     //调试用（正常路径不影响，只是多写一个 out 变量）：
@@ -324,8 +327,15 @@ bool traceRayWithHiZ (float3 startVS, float3 reflectDirVS, out float2 hitPixel, 
     //走到终点的细分：黄=没截断且走完整条、橙=没截断但很早结束、品红=被近平面截断过
     traceDebug = 0;
 
+    //**起点沿法线抬起来**（= 作者的 `rayOffset`，0.01 量级；他的签名就是 `HiZRayMarching(posVS, reflDirVS, normalVS, ...)`）。
+    //  原作者调参经验：太大 ⇒ 出现"钳制范围"（自反射和步进不协调）；太小 ⇒ 自反射。
+    //  它**替代**了原来那个 `inSelfBand` 补丁（"起点深度带内一律当空、不判命中"）：
+    //  补丁是按**深度**划一条带 ⇒ 物体**根部**那个面几乎是**竖直**的、深度和起点几乎一样 ⇒ 整个根部一圈被当成"空"
+    //  ⇒ **物体和它的倒影接不上（中间一条缝）**。沿法线把起点抬出来则不碰真交点，根部能正常判交。
+    float3 rayStartVS = startVS + normalVS * _SSRRayOffset;
+
     //前半段和线性版 traceRay 一致：屏幕空间参数化 + 1/z 线性插值（透视投影下 1/z 沿屏幕上的直线是线性的）
-    float2 startSS = ViewToScreenUV(startVS);
+    float2 startSS = ViewToScreenUV(rayStartVS);
 
     //射线**截断到近平面**（两篇参考文章都有这一步，我们之前漏了）：
     //朝相机飞的射线，终点可能落在相机背后 ⇒ ① ViewToScreenUV 的透视除法（除以≈0的 w）会给出垃圾 UV，
@@ -335,15 +345,15 @@ bool traceRayWithHiZ (float3 startVS, float3 reflectDirVS, out float2 hitPixel, 
     bool clamped = false;//调试用：这条射线有没有被近平面截断过
     if (reflectDirVS.z > 1e-6)//只有"朝相机飞"（视空间 z 在变大）才可能捅到背后；同时避免除零
     {
-        float endVSZ = startVS.z + reflectDirVS.z * maxDistance;
+        float endVSZ = rayStartVS.z + reflectDirVS.z * maxDistance;
         float nearVSZ = -_ProjectionParams.y;//近平面的视空间 z（负值）
         if (endVSZ > nearVSZ)
         {
-            maxDistance = (nearVSZ - startVS.z) / reflectDirVS.z;//缩到正好停在近平面
+            maxDistance = (nearVSZ - rayStartVS.z) / reflectDirVS.z;//缩到正好停在近平面
             clamped = true;
         }
     }
-    float3 endVS = startVS + reflectDirVS * maxDistance;//射线总长（视空间米）
+    float3 endVS = rayStartVS + reflectDirVS * maxDistance;//射线总长（视空间米）
     float2 endSS = ViewToScreenUV(endVS);
 
     float2 bufferSizeXY = _CameraBufferSize.zw;
@@ -362,7 +372,7 @@ bool traceRayWithHiZ (float3 startVS, float3 reflectDirVS, out float2 hitPixel, 
     float2 deltaSS = (endSS - startSS) / baseStepCount;
 
     //深度一律取"视空间米、正值"（和线性版的 intersect 同一口径）：1/-z 是这里的线性量
-    float start1bz = 1.0 / -startVS.z;
+    float start1bz = 1.0 / -rayStartVS.z;
     float end1bz = 1.0 / -endVS.z;
     float delta1bz = (end1bz - start1bz) / baseStepCount;
     float total1bz = end1bz - start1bz;//整条射线在 1/z 上的跨度 ⇒ 用它反推"走了百分之多少"
@@ -376,9 +386,6 @@ bool traceRayWithHiZ (float3 startVS, float3 reflectDirVS, out float2 hitPixel, 
     current1bz += jitter * delta1bz;
 
     hitZ = 0;	hitPixel = 0;	marchPercent = 1;//out 参数不会自动初始化，先把未命中时可能被读到的值定好
-
-    //射线**起点所在那个面的深度**（就是接收面自己）：用来识别"自交带"，见循环里那段
-    float startZ = -startVS.z;
 
     float mipLevel = 0.0;
     [loop]
@@ -398,17 +405,9 @@ bool traceRayWithHiZ (float3 startVS, float3 reflectDirVS, out float2 hitPixel, 
         float2 nextSS = currentSS + deltaSS * stepScale;
         float next1bz = current1bz + delta1bz * stepScale;
 
-        //这一步两端点的视空间深度（米、正值）
-        float rayNearZ = 1.0 / current1bz;
-        float rayFarZ = 1.0 / next1bz;
-        //和线性版的 intersect 一样：深度在一步里可能变大也可能变小（朝相机飞的射线就在变小），
-        //先排一下序、保证"近端 ≤ 远端"，后面的判据才不会用反
-        if (rayNearZ > rayFarZ)
-        {
-            float swapZ = rayNearZ;
-            rayNearZ = rayFarZ;
-            rayFarZ = swapZ;
-        }
+        //**这一步的远端深度**（视空间米、正值，更深的那个）：门要用它。
+        //深度在一步里可能变大也可能变小（朝相机飞的射线就在变小）⇒ 取 max 才是"远端"，否则判据会用反
+        float rayFarZ = max(1.0 / current1bz, 1.0 / next1bz);
 
         //**先判"这一步有没有跨过射线终点"**（终点已经按近平面截断过）：
         //步长大时很容易一跨就跨过终点，而跨过终点之后 z 会翻到相机那一侧 ⇒
@@ -466,28 +465,27 @@ bool traceRayWithHiZ (float3 startVS, float3 reflectDirVS, out float2 hitPixel, 
         //那一块里"离相机最近"的表面深度（保守 ⇒ 说"这块没东西"就真的没东西）
         float surfaceZ = LinearEyeDepth(rawHiZ, _ZBufferParams);
 
-        //**自交带**：射线是从接收面本身出发的，而掠射时它几乎**贴着接收面飞** —— 起点周围十几像素内
-        //采到的"面"就是接收面自己（深度和射线只差不到一个厚度）⇒ 判它命中就是"反射到自己身上"：
-        //取到接收面自己的颜色（亮的地方就是白点），该有反射的地方反射反而没了；而且这个判据是刀刃式的
-        //（差之毫厘就翻面）⇒ 逐像素乱跳 = 频闪。实测证据：把厚度拉到极小，真反射大片消失、这些白点却还在
-        //（说明它们的深度差≈0，厚度根本管不到）；而且它正好集中在掠射朝向（那会儿自交带最长）。
-        //⇒ 射线在**深度**上离开起点超过一个厚度之前，这一带一律当"空"：不判命中、也不降档，升档往外飞。
-        bool inSelfBand = abs(sampleZ - startZ) <= _SSRPixelThickness;
-
-        if (rayFarZ > surfaceZ && !inSelfBand)//这一步的远端越过了这一块里最近的表面 ⇒ 可能碰到了
+        //（这里原来有个 `inSelfBand` 补丁："射线在深度上还没离开起点一个厚度之内 ⇒ 一律当空、不判命中"。
+        //  它把**物体根部**那一圈真反射也一起当掉了（根部那个面几乎竖直、深度和起点几乎一样）
+        //  ⇒ 物体和它的倒影接不上（中间一条缝）。现在改用"起点沿法线抬起 `rayOffset`"治自交 ⇒ 补丁已删除。）
+        //**门的判据一定用"这一步的远端"**（保守：只有整步都还在面**前面**时，才敢说"这块没东西"、才敢升档）。
+        //⚠️⚠️ 曾经试过照搬原文那句门（"**采样点**已越过面 ⇒ 才算碰到"）：**实测立刻出现大量条纹状缺失**。
+        //  原因：原文的采样点是在**步进前方半步**（他先迈进再算 `currInvW + 半步`），所以"采样点越过" = 未来那一点越过 ⇒ 保守；
+        //  而我们是在这一步的**中点**采样（落后半步）⇒ 同一句话就变成"当前中点正越过" ⇒ 步末那段还没测就把整步放行
+        //  ⇒ 一步跳过去 ⇒ 条纹。（两边的 near/far 定义也整体错开半步，不能逐字抄。）
+        if (rayFarZ > surfaceZ)//这一步的远端越过了这一块里最近的表面 ⇒ 这一步可能跨过了它
         {
             if (mipLevel > 0.5)
             {
                 mipLevel -= 1.0;//还有更细的级：这一步不算数、退回起点、降一级重走
                 continue;
             }
-            //已经是最细一级：判据**两端都锚在采样点**，窗口宽度只有"厚度"这一个量：
-            //  射线在采样点处已经越过表面（sampleZ > surfaceZ），且越过的量不超过厚度。
-            //⚠️ 上界不能用 rayFarZ（步子远端）、下界不能用 rayNearZ（步子起点）：掠射时这一步的深度跨度
-            //   可以非常大（近地平线处尤甚），窗口被撑大 ⇒ 一路上但凡被采到的面都"落进窗口" ⇒ 假命中，
-            //   而且采样点被抖动挪一格就翻面 ⇒ 频闪（实测：白频闪正好集中在掠射朝向）。
-            //⚠️ 代价：一步里深度跨得比厚度还快的交点会漏（真掠射那种）；要它就得把厚度调大一点。
-            if (sampleZ > surfaceZ && surfaceZ > sampleZ - _SSRPixelThickness)
+            //已经是最细一级：判"**这一步跨过了这个面**" —— 门已经保证"远端越过"，
+            //  这里只要面还落在**采样点 ± 一个厚度**之内（前后都算 ⇒ 用 abs）就算命中。
+            //  为什么改成"前后都算"（原文那层意思）：粗一点的位置上，面往往正好落在采样点**前面一点点**、
+            //  却被这一步的远端跨过去了 —— 只在"已经钻进面里"才算会把它整条漏掉（这就是原来的漏/断层）。
+            //  窗口仍然只放宽到"± 一个厚度"（不是整步的深度跨度）⇒ 不会像"用步子两端当窗口"那样在掠射处到处假命中。
+            if (abs(surfaceZ - sampleZ) < _SSRPixelThickness)
             {
                 //⚠️ 这里曾经试过"在这一步内做 6 次二分"把命中位置细化到亚像素（照搬线性版那套），
                 //   实测**看不出区别** ⇒ 已回退。原因是区间太小（半步 = 半个 trace 像素 = 1 个全分辨率像素），
@@ -500,11 +498,11 @@ bool traceRayWithHiZ (float3 startVS, float3 reflectDirVS, out float2 hitPixel, 
                 traceDebug = float3(1, 1, 1);//调试：白 = 命中
                 return true;
             }
-            //最细一级但不在厚度内（多半是这一步直接穿过去了）：继续往前小步走
+            //最细一级但不在窗口内（面离采样点超过一个厚度）：继续往前小步走
         }
         else
         {
-            //这一整块都没东西（或者还在自交带里）⇒ 放心大步走：升一级（步长翻倍，最多 _MaxHiZMipLevel）
+            //这一整块都没东西 ⇒ 放心大步走：升一级（步长翻倍，最多 _MaxHiZMipLevel）
             mipLevel = min(mipLevel + 1.0, (float)_MaxHiZMipLevel);
         }
 
@@ -532,10 +530,16 @@ float alphaCalc(float3 rayDirection, float2 hitPixel, float marchPercent, float 
     //镜子里应该看到相机背后/贴近相机的东西，而那块画面根本不在屏幕上，SSR 无论如何都取不到，只会取到错误的像素，所以拦掉
     res *= saturate(1.0 - rayDirection.z / max(_SSRBackRayFadeWidth, 0.001));
 
-    //屏幕边缘淡出：把命中点转到 NDC，用"屏幕中心=0、屏幕边缘=1"的归一化半径衡量，超过 _SSRScreenEdgeFadeStart 开始淡出
-    float2 screenPCurrent = 2 * (hitPixel - 0.5);//坐标转到-1，1
-    float2 screenEdgeFade01 = saturate((abs(screenPCurrent) - _SSRScreenEdgeFadeStart) / max(1.0 - _SSRScreenEdgeFadeStart, 0.001));
-    res *= 1 - max(screenEdgeFade01.x, screenEdgeFade01.y);
+    //屏幕边缘淡出（已换成暗角式，见下）：原来那套用"屏幕中心=0、屏幕边缘=1"的归一化半径衡量，超过 _SSRScreenEdgeFadeStart 开始淡出
+    //**"暗角"式**：用"离屏幕中心的**半径**"（椭圆）而不是"x/y 里谁大"（方框）；曲线换成幂次平滑
+    //（中心附近几乎不动、靠边迅速掉到 0），不再有"开始淡出"那条可见折线。
+    //  · _SSREdgeFadeScale（原始 1.8）：距离倍率。屏幕边框上 att≈0.9 ⇒ (1-0.81)^5≈0.0002，基本已经淡没；
+    //    反射被削太多就把这个调小（1.4 左右）。
+    //  · _SSREdgeFadeAttenuation（原始 1）：距离的整形幂（>1 更集中在中心）。
+    float2 attUV = abs(hitPixel - 0.5) * _SSREdgeFadeScale;
+    attUV = pow(saturate(attUV), max(_SSREdgeFadeAttenuation, 0.001));
+    float att = length(attUV);
+    res *= pow(saturate(1.0 - att * att), 5.0);
 
     //命中点越靠射线末端越淡，强度由 _SSRMarchFadeStrength 控制（0=不衰减）
     res *= 1 - marchPercent * _SSRMarchFadeStrength;
@@ -618,7 +622,7 @@ float4 TracePassFragment (Varyings input) : SV_Target
     bool hit;
     if (_HiZEnabled > 0.5)
     {
-        hit = traceRayWithHiZ(startVS, reflectDirVS, hitPixel, marchPercent, hitZ, traceDebug);
+        hit = traceRayWithHiZ(startVS, reflectDirVS, normalVS, hitPixel, marchPercent, hitZ, traceDebug);
     }
     else
     {
