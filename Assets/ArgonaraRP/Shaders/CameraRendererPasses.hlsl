@@ -6,7 +6,8 @@ TEXTURE2D(_SourceTexture);
 TEXTURE2D(_GBuffer1);//rgb是albedo,a的前4位是shadingModelID
 TEXTURE2D(_GBuffer2);//rgb是world normal
 TEXTURE2D(_GBuffer3);//roughness,metallic,occlusion
-TEXTURE2D(_GBuffer4);//rgb是emission
+TEXTURE2D(_GBuffer4);//rgb是**间接光**（漫反射 + 高光）
+TEXTURE2D(_GBuffer5);//rgb是**自发光 emission**（和 GT4 拆开存：SSGI 的命中点要用纯 emission）
 //TEXTURE2D(_GBufferDepth);
 
 struct Varyings
@@ -70,8 +71,10 @@ float4 DeferredLightPassFragment(Varyings input) : SV_Target
     //return float4(GT1.a*10, 0, 0, 1);
     //return float4(((float)shadingModelID).xxx, 1.0);
     
+    //GT4 = 间接光、GT5 = 自发光：物体会色里是分开写的，这里加回来（光照口径和以前完全一样，只是不再混在一张图里）
     float3 GT4 = SAMPLE_TEXTURE2D(_GBuffer4, sampler_linear_clamp, uv).rgb;
-    float3 emission_indirectColor = GT4.rgb;
+    float3 GT5 = SAMPLE_TEXTURE2D(_GBuffer5, sampler_linear_clamp, uv).rgb;
+    float3 emission_indirectColor = GT4 + GT5;
     
     float3 output = 0.0;
     

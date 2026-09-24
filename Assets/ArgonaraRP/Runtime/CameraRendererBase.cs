@@ -6,7 +6,8 @@ public abstract class CameraRendererBase
 	public abstract void Render(ScriptableRenderContext context, Camera camera, CameraBufferSettings bufferSettings,
 		bool useDynamicBatching, bool useGPUInsancing, bool useLightsPerObject,
 		ShadowSettings shadowSettings, SSRSettings ssrSettings, PostFXSettings postFXSettings, int colorLUTResolution,
-		TemporalAntiAliasingSettings taaSettings);
+		TemporalAntiAliasingSettings taaSettings, ScreenSpaceIndirectDiffuseSettings ssgiSettings,
+		HierarchicalZSettings hizSettings);
 
 	public abstract void Dispose();
 

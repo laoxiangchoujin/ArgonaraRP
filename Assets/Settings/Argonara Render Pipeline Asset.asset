@@ -59,8 +59,11 @@ MonoBehaviour:
         shader: {fileID: 4800000, guid: 04c301ab9fbc0d744872a0253b0bb22f, type: 3}
     other:
       atlasSize: 1024
+  hiz:
+    mipCount: 4
+    shader: {fileID: 4800000, guid: 82a284fd861b7174191a9a2f2944f7d4, type: 3}
   ssr:
-    enabled: 1
+    enabled: 0
     fullResolution: 1
     totalRayLength: 32
     pixelStride: 1
@@ -69,7 +72,7 @@ MonoBehaviour:
     pixelThickness: 0.15
     binarySearchCountlimit: 10
     backRayFadeWidth: 0.2
-    marchFadeStrength: 0
+    marchFadeStrength: 0.8
     edgeFadeScale: 0.75
     edgeFadeAttenuation: 1
     intensity: 1
@@ -77,19 +80,33 @@ MonoBehaviour:
     fireflyStrength: 0.2
     roughnessMipScale: 3
     roughnessMipBias: 0
-    hiz:
-      enabled: 1
-      mipCount: 4
-      shader: {fileID: 4800000, guid: 82a284fd861b7174191a9a2f2944f7d4, type: 3}
+    useHiZ: 1
     hizRayOffset: 0.01
     shader: {fileID: 4800000, guid: ce2eb3678f384034c8aef18a989cca1a, type: 3}
-  postFXSettings: {fileID: 11400000, guid: 80dc71d8e864e284581e4ac8f8a23efe, type: 2}
+  screenSpaceIndirectDiffuse:
+    enabled: 1
+    fullResolution: 0
+    rayCount: 16
+    rayLength: 32
+    stepCountLimit: 48
+    thickness: 0.15
+    screenFade: 0.05
+    otherLightLimit: 2
+    blueNoise: {fileID: 0}
+    temporalWeight: 0.95
+    temporalScale: 2
+    motionBlendScale: 5
+    blurRadius: 8
+    intensity: 1
+    debugIndirect: 0
+    shader: {fileID: 4800000, guid: 176f29d07ddbda740a9a41602532dd11, type: 3}
   temporalAntiAliasing:
     enabled: 1
     blendFactor: 0.05
     motionBlendScale: 100
     sharpenStrength: 0.005
     shader: {fileID: 4800000, guid: cb76f8f2de3d5d14abb6a482149773a8, type: 3}
+  postFXSettings: {fileID: 11400000, guid: 80dc71d8e864e284581e4ac8f8a23efe, type: 2}
   colorLUTResolution: 32
   cameraRendererShader: {fileID: 4800000, guid: 01c9380ab1418fd44a02e56b2677bee5,
     type: 3}

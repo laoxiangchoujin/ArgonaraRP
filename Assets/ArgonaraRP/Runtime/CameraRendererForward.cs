@@ -40,7 +40,8 @@ public partial class CameraRendererForward : CameraRendererBase
     public override void Render(ScriptableRenderContext context, Camera camera, CameraBufferSettings bufferSettings,
         bool useDynamicBatching, bool useGPUInsancing, bool useLightsPerObject,
         ShadowSettings shadowSettings, SSRSettings ssrSettings, PostFXSettings postFXSettings, int colorLUTResolution,
-        TemporalAntiAliasingSettings taaSettings)
+        TemporalAntiAliasingSettings taaSettings, ScreenSpaceIndirectDiffuseSettings ssgiSettings,
+        HierarchicalZSettings hizSettings)
     {
         //ssrSettings：转给 Setup（那边交给 ScreenSpaceReflection 处理：判定/建图/绑 _SSRTex/传参）
         this.context = context;
@@ -119,7 +120,7 @@ public partial class CameraRendererForward : CameraRendererBase
         postFXStack.Setup(context, camera, bufferSize, postFXSettings, useHDR, colorLUTResolution, cameraSettings.finalBlendMode, bufferSettings.bicubicRescaling);
         buffer.EndSample(SampleName);
         
-        Setup(shadowSettings, ssrSettings, taaSettings);//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程   //第二个beginSample
+        Setup(shadowSettings, ssrSettings, taaSettings, hizSettings);//lighting的Setup包含了shadows的render指令，先渲染阴影，然后在此做相机的主进程   //第二个beginSample
         DrawVisibleGeometry(useDynamicBatching, useGPUInsancing, useLightsPerObject,
             cameraSettings.renderingLayerMask);
         DrawUnsupportedShaders();
@@ -218,7 +219,7 @@ public partial class CameraRendererForward : CameraRendererBase
     bool useSSR;
 
     //=========================== Hi-Z（分层深度图）===========================
-    //SSR 的追踪用它决定步长（安全就升 mip、碰到就退一级 ⇒ 比线性步进快得多）。它的设置挂在 SSR 设置里（ssrSettings.hiz）。
+    //SSR 的追踪用它决定步长（安全就升 mip、碰到就退一级 ⇒ 比线性步进快得多）。它的设置是管线资产**顶层**那份（HierarchicalZSettings）。
     //建图/逐级降采样/释放都在 HierarchicalZ 里，这里只管**时机**：
     //  Setup：和 ssr.Setup 挨着（建图 + 传参数，不碰渲染目标）
     //  Draw：紧挨着 ssr.Draw 之前（此刻深度图完整、反射源也齐了）
@@ -248,7 +249,8 @@ public partial class CameraRendererForward : CameraRendererBase
     private static int bufferSizeId = Shader.PropertyToID("_CameraBufferSize");//因为unity默认提供的_ScreenParams数值不会随我们的渲染缩放调整，需要自己传值替代
     
     ///将相机的属性应用于上下文context
-    void Setup(ShadowSettings shadowSettings, SSRSettings ssrSettings, TemporalAntiAliasingSettings taaSettings)
+    void Setup(ShadowSettings shadowSettings, SSRSettings ssrSettings, TemporalAntiAliasingSettings taaSettings,
+        HierarchicalZSettings hizSettings)
     {
         //=== TAA 抖动：**必须**在 SetupCameraProperties 之前注入 ===
         //那个函数就是拿 camera.projectionMatrix 去算 unity_MatrixVP 的 ⇒ 先注入，VP / unity_MatrixInvVP 自动都是抖过的、口径一致。
@@ -282,8 +284,14 @@ public partial class CameraRendererForward : CameraRendererBase
         //⚠️ 必须放在下面"设成颜色附件+深度"之前：建图那几帧里会清图、把渲染目标设成 SSR 图。
         ssr.Setup(buffer, ssrSettings, useSSR, bufferSize.x, bufferSize.y, useHDR);
 
-        //HiZ：同样**每帧都调**（不走时在里面释放主图 + 绑黑图兜底）。useSSR 为假就不用建它（眼下只有 SSR 会用）
-        hiz.Setup(buffer, ssrSettings?.hiz, useSSR, bufferSize.x, bufferSize.y);
+        //HiZ：同样**每帧都调**（不走时在里面释放主图 + 绑黑图兜底）。前向不做 SSGI ⇒ 只看 SSR 要不要用
+        //（`ssrSettings.useHiZ` 关了就固定走线性步进，那就没必要建 Hi-Z）
+        bool needHiZ = useSSR && ssrSettings != null && ssrSettings.useHiZ;
+        hiz.Setup(buffer, hizSettings, needHiZ, bufferSize.x, bufferSize.y);
+
+        //SSGI 的兜底：**前向不做 SSGI**（只接延迟），但物体着色（GetGI）两条路共用、会采 `_SSGITex`
+        //⇒ 这里每帧绑成 1×1 纯黑（a = 0）⇒ 逐像素退回烘焙/探针（不然会采到未绑定的纹理）
+        ScreenSpaceIndirectDiffuse.BindFallback(buffer);
 
         //TAA：和 SSR 一个套路（**每帧都调**）：建/重建两张持久历史图 + 上传参数；关掉那帧释放两张历史图。
         //重投影用的 VP 传**未抖动**的那份：shader 里已经 `uv -= _TAAJitter` 回到未抖动坐标，两边别都补。

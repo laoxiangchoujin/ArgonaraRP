@@ -18,12 +18,18 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
 
     TemporalAntiAliasingSettings taaSettings;
 
+    ScreenSpaceIndirectDiffuseSettings ssgiSettings;
+
+    //Hi-Z 的设置（管线资产顶层那份）：SSR / SSGI 共用，谁要谁触发建图
+    HierarchicalZSettings hizSettings;
+
     int colorLUTResolution;
     
     //构造函数
     public ArgonaraRenderPipeline(ArgonaraRenderPipelineAsset.CameraRendererType cameraRenderType, CameraBufferSettings cameraBufferSettings, bool useDynamicBatching, bool useGPUInstancing, bool useSRPBatcher,
         bool useLightsPerObject, ShadowSettings shadowSettings, PostFXSettings postFXSettings, int colorLUTResolution,
-        Shader cameraRendererShader, SSRSettings ssrSettings, TemporalAntiAliasingSettings taaSettings)
+        Shader cameraRendererShader, SSRSettings ssrSettings, TemporalAntiAliasingSettings taaSettings,
+        ScreenSpaceIndirectDiffuseSettings ssgiSettings, HierarchicalZSettings hizSettings)
     {
         //this.allowHDR = allowHDR;
         this.cameraBufferSettings = cameraBufferSettings;
@@ -35,6 +41,8 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
         this.shadowSettings = shadowSettings;
         this.ssrSettings = ssrSettings;
         this.taaSettings = taaSettings;
+        this.ssgiSettings = ssgiSettings;
+        this.hizSettings = hizSettings;
         this.postFXSettings = postFXSettings;
         this.colorLUTResolution = colorLUTResolution;
 
@@ -82,7 +90,7 @@ public partial class ArgonaraRenderPipeline : RenderPipeline
                 : renderer;
             r.Render(context, camera, cameraBufferSettings,
                 useDynamicBatching, useGPUInstancing, useLightsPerObject, 
-                shadowSettings, ssrSettings, postFXSettings, colorLUTResolution, taaSettings);
+                shadowSettings, ssrSettings, postFXSettings, colorLUTResolution, taaSettings, ssgiSettings, hizSettings);
         }
     }
 

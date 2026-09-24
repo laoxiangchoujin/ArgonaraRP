@@ -116,7 +116,8 @@ void LitPassFragmentGBuffer(Varyings input,
     out float4 GT1 : SV_Target0,
     out float4 GT2 : SV_Target1,
     out float4 GT3 : SV_Target2,
-    out float3 GT4 : SV_Target3)
+    out float3 GT4 : SV_Target3,
+    out float3 GT5 : SV_Target4)
 {
     UNITY_SETUP_INSTANCE_ID(input);
     
@@ -160,7 +161,7 @@ void LitPassFragmentGBuffer(Varyings input,
     
     float3 emission = GetEmission(config);
     
-    //间接光（漫反射 + 高光）整包写进 GT4，光照Pass整体加上去就完事
+    //间接光（漫反射 + 高光）写 GT4、自发光单独写 GT5；光照Pass里两者相加（口径和以前一样，只是不再混在一张图里）
     float3 indirectColor = IndirectBRDF(surfaceWS, brdf, gi.diffuse, gi.specular);
         //SampleLightmap(GI_FRAGMENT_DATA(input)) + SampleLightProbe(input.positionWS, normalWS);
     
@@ -168,7 +169,9 @@ void LitPassFragmentGBuffer(Varyings input,
     GT1 = float4(color, shadingModelID4_null4);
     GT2 = float4(surfaceWS.normal * 0.5 + 0.5, 0.0);
     GT3 = float4(surfaceWS.roughness, surfaceWS.metallic, surfaceWS.occlusion, 0.0);
-    GT4 = float3(emission + indirectColor);
+    //⚠️ 分开存的原因：SSGI 的命中点要用**纯 emission**（混了 indirect 会把间接光算两遍）；bloom 也只想要纯自发光
+    GT4 = float3(indirectColor);
+    GT5 = float3(emission);
     
     
     //GT5 = float4(indirectDiffuse, 0);

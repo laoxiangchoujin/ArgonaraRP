@@ -280,7 +280,8 @@ Shader "Argonara RP/Scene/Terrain"
 				out float4 GT1 : SV_Target0,
 				out float4 GT2 : SV_Target1,
 				out float4 GT3 : SV_Target2,
-				out float3 GT4 : SV_Target3)
+				out float3 GT4 : SV_Target3,
+				out float3 GT5 : SV_Target4)
 			{
 				UNITY_SETUP_INSTANCE_ID(input);
 
@@ -331,7 +332,9 @@ Shader "Argonara RP/Scene/Terrain"
 				GT1 = float4(color, shadingModelID4_null4);
 				GT2 = float4(surfaceWS.normal * 0.5 + 0.5, 0.0);
 				GT3 = float4(surfaceWS.roughness, surfaceWS.metallic, surfaceWS.occlusion, 0.0);
-				GT4 = float3(emission + indirectColor);
+				//和 LitPassFragmentGBuffer 口径一致：GT4 = 间接光、GT5 = 自发光（拆开存）
+				GT4 = float3(indirectColor);
+				GT5 = float3(emission);
 			}
             ENDHLSL
         }

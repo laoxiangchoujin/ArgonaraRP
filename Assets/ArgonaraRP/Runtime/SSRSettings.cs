@@ -73,11 +73,10 @@ public class SSRSettings
     [Tooltip("粗糙度→mip 的整体平移：正=更糊、负=更清。微调用，一般 0")]
     [Range(-3f, 3f)] public float roughnessMipBias = 0f;
 
-    //=============================== Hi-Z（分层深度图）===============================
-    //SSR 的追踪靠它决定步长（安全就升 mip、碰到就退一级）。
-    //挂在 SSR 设置里而不是管线asset顶层：目前只有 SSR 用它；以后 SSAO 等也要用时再往上提。
-    public HierarchicalZSettings hiz = new HierarchicalZSettings();
+    [Header("ssr HiZ相关")] public bool useHiZ = true;
+    //射线起点沿法线抬起的距离（视空间米）：治自交（Hi-Z 追踪那趟用）
     [Range(0f, 0.5f)] public float hizRayOffset = 0.01f;
+    
 
     //SSR用的shader（ScreenSpaceReflection.shader）：追踪 + 两趟模糊，靠pass索引被DrawProcedural调用。
     //放在这个类里而不是管线asset顶层：它只服务于SSR这一个特性，跟着SSR的设置一起走（PCSS那个同理）

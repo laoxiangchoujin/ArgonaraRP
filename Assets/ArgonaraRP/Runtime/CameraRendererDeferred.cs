@@ -19,7 +19,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
     bool useSSR;
 
     //=========================== Hi-Z（分层深度图）===========================
-    //SSR 的追踪用它决定步长（安全就升 mip、碰到就退一级 ⇒ 比线性步进快得多）。它的设置挂在 SSR 设置里（ssrSettings.hiz）。
+    //SSR 的追踪用它决定步长（安全就升 mip、碰到就退一级 ⇒ 比线性步进快得多）。它的设置是管线资产**顶层**那份（HierarchicalZSettings）。
     //建图/逐级降采样/释放都在 HierarchicalZ 里，这里只管**时机**：
     //  Setup：和 ssr.Setup 挨着（建图 + 传参数，不碰渲染目标）
     //  Draw：紧挨着 ssr.Draw 之前（此刻深度图完整、反射源也齐了）
@@ -45,6 +45,13 @@ public partial class CameraRendererDeferred : CameraRendererBase
             projectionJittered = false;
         }
     }
+
+    //=========================== SSGI（屏幕空间间接光）===========================
+    //只有延迟用（前向先不接）。时序和 SSR 一样：Setup 建图 + 绑 _SSGITex(上一帧那张) →
+    //在"拷完不透明+天空盒的颜色快照"之后画 → **下一帧**的物体着色/光照 Pass 读它。
+    //Hi-Z 和 SSR 共用顶层那份设置 ⇒ 建 Hi-Z 的条件变成 useSSR || useSSGI。
+    ScreenSpaceIndirectDiffuse ssgi = new ScreenSpaceIndirectDiffuse();
+    bool useSSGI;
 
     private const string bufferName = "Render Camera Deferred";
     private CommandBuffer buffer = new CommandBuffer
@@ -77,7 +84,8 @@ public partial class CameraRendererDeferred : CameraRendererBase
     public override void Render(ScriptableRenderContext context, Camera camera, CameraBufferSettings bufferSettings,
         bool useDynamicBatching, bool useGPUInsancing, bool useLightsPerObject,
         ShadowSettings shadowSettings, SSRSettings ssrSettings, PostFXSettings postFXSettings, int colorLUTResolution,
-        TemporalAntiAliasingSettings taaSettings)
+        TemporalAntiAliasingSettings taaSettings, ScreenSpaceIndirectDiffuseSettings ssgiSettings,
+        HierarchicalZSettings hizSettings)
     {
         this.context = context;
         this.camera = camera;
@@ -139,7 +147,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
 
         //------------------------------2.相机主进程：准备和绘制---------------------------------
         //2.1准备渲染
-        Setup(shadowSettings, ssrSettings, taaSettings);
+        Setup(shadowSettings, ssrSettings, taaSettings, ssgiSettings, hizSettings);
         //2.2渲染
         DrawVisibleGeometry(useDynamicBatching, useGPUInsancing, useLightsPerObject, cameraSettings.renderingLayerMask);
         DrawUnsupportedShaders();
@@ -232,10 +240,11 @@ public partial class CameraRendererDeferred : CameraRendererBase
     static int[] gBuffersId =
     {
         Shader.PropertyToID("_GBuffer1"), Shader.PropertyToID("_GBuffer2"),
-        Shader.PropertyToID("_GBuffer3"), Shader.PropertyToID("_GBuffer4")
+        Shader.PropertyToID("_GBuffer3"), Shader.PropertyToID("_GBuffer4"),
+        Shader.PropertyToID("_GBuffer5")
     };
-    //这里，暂时用它存一下indrect diffuse，毕竟光照计算要用到。我想的是把间接diffuse暂存，间接高光在光照计算算
-    //等实现什么实时光照的方法后，弃用这个纹理
+    //GT4 = 间接光（漫反射 + 高光）、GT5 = 自发光（emission，单独一张）——
+    //拆开的原因：SSGI 的命中点要用**纯 emission**（和间接光混在一起会把间接光算两遍）；光照Pass里两者相加，画面口径不变
     
     static int sourceTextureId = Shader.PropertyToID("_SourceTexture");
     static int srcBlendId = Shader.PropertyToID("_CameraSrcBlend");
@@ -246,7 +255,8 @@ public partial class CameraRendererDeferred : CameraRendererBase
     
     
     ///将相机的属性应用于上下文context
-    void Setup(ShadowSettings shadowSettings, SSRSettings ssrSettings, TemporalAntiAliasingSettings taaSettings)
+    void Setup(ShadowSettings shadowSettings, SSRSettings ssrSettings, TemporalAntiAliasingSettings taaSettings,
+        ScreenSpaceIndirectDiffuseSettings ssgiSettings, HierarchicalZSettings hizSettings)
     {
         //=== TAA 抖动：**必须**在 SetupCameraProperties 之前注入 ===
         //那个函数就是拿 camera.projectionMatrix 去算 unity_MatrixVP 的 ⇒ 先注入，VP / unity_MatrixInvVP 自动都是抖过的、口径一致。
@@ -277,13 +287,29 @@ public partial class CameraRendererDeferred : CameraRendererBase
         //延迟这边没有附加条件 —— 它永远有颜色快照（CopyColorAttachments 是无条件跑的）
         useSSR = ScreenSpaceReflection.ShouldRender(ssrSettings, camera);
 
+        //本帧走不走 SSGI：同一个套路的公共判定（总开关 / Material / 只挑 Game 相机）
+        useSSGI = ScreenSpaceIndirectDiffuse.ShouldRender(ssgiSettings, camera);
+
         //交给 SSR 自己（**每帧都调**，真/假两种走向都在里面）：建(重建)两张持久图 + 绑 _SSRTex(上一帧那张)
         //+ 上传调参；关掉那帧则是释放两张持久图 + 绑 1×1 纯黑（不执行的话本帧会采到上一帧那张不该再用的图）。
         //⚠️ 必须放在下面"设成颜色附件+深度"之前：建图那几帧里会清图、把渲染目标设成 SSR 图。
         ssr.Setup(buffer, ssrSettings, useSSR, bufferSize.x, bufferSize.y, useHDR);
 
-        //HiZ：同样**每帧都调**（不走时在里面释放主图 + 绑黑图兜底）。useSSR 为假就不用建它（眼下只有 SSR 会用）
-        hiz.Setup(buffer, ssrSettings?.hiz, useSSR, bufferSize.x, bufferSize.y);
+        //SSGI：同样**每帧都调**（真/假两种走向都在里面）：建/重建两张持久 GI 图 + 绑 _SSGITex(上一帧那张) + 上传参数。
+        //位置和 ssr.Setup 一模一样，必须在下面"设成颜色附件+深度"之前（建图那几帧会清图、把渲染目标设成 GI 图）。
+        //时间累积的重投影传**未抖动**的 VP（和 TAA 同口径：物体按抖过的矩阵画，但重投影按没抖的算）
+        //+ **本帧抖动量**：既然 VP 是没抖的，投出来的历史 UV 天然带一个"−抖动"，得在 shader 里加回去
+        //（TAA 里那一行的同款做法；不加的话静止时历史每帧都被采偏半个像素 ⇒ 白抖、还稀释历史）。
+        //TAA 没开时抖动量是 0，加不加一样。
+        ssgi.Setup(buffer, ssgiSettings, useSSGI, camera, bufferSize.x, bufferSize.y,
+            GL.GetGPUProjectionMatrix(originalProjection, true) * camera.worldToCameraMatrix,
+            useTAA ? taa.GetJitterUV(camera) : Vector2.zero);
+
+        //HiZ：同样**每帧都调**（不走时在里面释放主图 + 绑黑图兜底）。SSR 和 SSGI 共用顶层那份设置 ⇒ 两家里有一家要就得建。
+        //⚠️ SSR 那边还得看它**自己愿不愿意用**（`ssrSettings.useHiZ`：关了就固定走线性步进）
+        //   ⇒ "只开 SSR 且它选了线性"时不建，省下那条全分辨率 mip 链。
+        bool needHiZ = useSSGI || (useSSR && ssrSettings != null && ssrSettings.useHiZ);
+        hiz.Setup(buffer, hizSettings, needHiZ, bufferSize.x, bufferSize.y);
 
         //TAA：和 SSR 一个套路（**每帧都调**）：建/重建两张持久历史图 + 上传参数；关掉那帧释放两张历史图。
         //重投影用的 VP 传**未抖动**的那份：shader 里已经 `uv -= _TAAJitter` 回到未抖动坐标，两边别都补。
@@ -332,7 +358,8 @@ public partial class CameraRendererDeferred : CameraRendererBase
     // 1    ARGB32 8×4      albedo          albedo          albedo          ShadingModelID(4b)+空(4b)        32
     // 2    ARGB2101010     normal.x        normal.y        normal.z        _ReceiveShadows(1b)+空(1b)       32
     // 3    ARGB32 8×4      roughness       metallic        occlusion       空                               32
-    // 4    RGB111110       emission + indirect diffuse                      —                                32
+    // 4    RGB111110       间接光（漫反射 + 高光）                          —                                32
+    // 5    RGB111110       emission（自发光，单独一张）                     —                                32
     
     void AllocateGBuffers()
     {
@@ -346,7 +373,9 @@ public partial class CameraRendererDeferred : CameraRendererBase
         buffer.GetTemporaryRT(gBuffersId[2], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
             RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear); //GT3，xyz是smoothness,metallic,occlusion，w是空
         buffer.GetTemporaryRT(gBuffersId[3], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
-            RenderTextureFormat.RGB111110Float, RenderTextureReadWrite.Linear); //GT4，xyz是emission + indirect diffuse and Specular(11，11，10)，没有w通道
+            RenderTextureFormat.RGB111110Float, RenderTextureReadWrite.Linear); //GT4，xyz是间接光（漫反射+高光），没有w通道
+        buffer.GetTemporaryRT(gBuffersId[4], bufferSize.x, bufferSize.y, 0, FilterMode.Bilinear,
+            RenderTextureFormat.RGB111110Float, RenderTextureReadWrite.Linear); //GT5，xyz是自发光 emission，没有w通道
 
     }
 
@@ -492,7 +521,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
         //为Opaque Lit写入GBuffer
         //DrawGBuffers();
         buffer.SetRenderTarget(
-            new RenderTargetIdentifier[] { gBuffersId[0], gBuffersId[1], gBuffersId[2], gBuffersId[3]},
+            new RenderTargetIdentifier[] { gBuffersId[0], gBuffersId[1], gBuffersId[2], gBuffersId[3], gBuffersId[4]},
             gDepthId);
         buffer.ClearRenderTarget(true, true, Color.clear);
         buffer.name = "GBuffer";
@@ -544,17 +573,36 @@ public partial class CameraRendererDeferred : CameraRendererBase
         //这份是"不透明+天空盒"的最终快照，SSR/折射都采它 → 要带mip链（开关开着的话）
         CopyColorAttachments(true);
 
-        //=== SSR（屏幕空间反射）===
+        //=== SSR（屏幕空间反射）/ SSGI（屏幕空间间接光）===
         //位置很讲究：① 要采"不透明+天空盒"的颜色快照、_CameraDepthTexture 和 _GBuffer2；
-        //② 此刻透明物还没画，水面自己不会被采进反射里。
-        //这三趟写出来的是"本帧要写的那张"（下一帧才被不透明物体消费）；画完 _SSRTex 绑的是当帧这张，
+        //② 此刻透明物还没画，水面/玻璃自己不会被采进反射和 GI 里。
+        //写出来的都是"本帧要写的那张"（下一帧才被消费）；SSR 画完 _SSRTex 绑的是当帧这张，
         //所以下面画的**透明物**拿到的是当帧的反射（不透明物体在 GBuffer 那趟拿到的是上一帧那张）
+        //Hi-Z 两家共用 ⇒ 谁要就建一次（追踪都靠它按 mip 大步跳），必须在追踪之前
+        if (useSSR || useSSGI)
+        {
+            hiz.Draw(buffer);//逐级降采样；此刻深度图已经完整
+        }
         if (useSSR)
         {
-            hiz.Draw(buffer);//先建 HiZ（逐级降采样），追踪那趟要按 mip 采它；此刻深度图已经完整
             ssr.Draw(buffer, colorAttachmentId, gDepthId);//三趟（附件 id 由各渲染器给）
+        }
+        if (useSSGI)
+        {
+            //（要传 camera：SSGI 的状态是**每个相机一份**，同一个渲染器实例被多台相机轮流用）
+            ssgi.Draw(buffer, camera, colorAttachmentId, gDepthId);//四趟：追踪 → 时间累积 → 横竖两趟双边
+            //⚠️ 必须紧跟着调：换双缓冲索引 + 本帧 VP 存成"上一帧 VP" + 清 resetHistory + 还两张临时图
+            //（漏了它 = 双缓冲永不交换、历史永远是那张清空过的图 ⇒ GI 攒不起来）
+            ssgi.Cleanup(buffer, camera);
+        }
+        if (useSSR || useSSGI)
+        {
+            //⚠️ 帧调试器的**外层组名取的是执行那一刻的 buffer.name**（HiZ/SSR/SSGI 各自的 Draw 都改过它、都没还）
+            //⇒ 必须在 ExecuteBuffer **之前**定好；不定的话外层就显示成"最后画的那个特性"，
+            //看起来像 SSGI 把 Hi-Z / SSR 包住了（其实只是同一段命令）。
+            buffer.name = "Screen Space Effects";
             ExecuteBuffer();//让上面那些 RT/全局绑定立刻生效：紧接着要画透明物了
-            buffer.name = bufferName; //恢复本渲染器的缓冲区名（那几趟改成了 "Screen Space SSR"）
+            buffer.name = bufferName; //恢复本渲染器的缓冲区名（在 ExecuteBuffer **之后**才恢复）
         }
 
         //画transparent——第2个DrawingSettings，目前有transparnet unlit和lit
@@ -609,6 +657,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
 
         //SSR：本帧的 blur 倒手图已经在 ssr.Draw 里还掉了；两张反射图是**跨帧保留**的
         //（释放走 Setup 的 else 分支，或 ssr.Dispose）
+        //SSGI 同理：中间图在 ssgi.Draw 里借还配对，两张 GI 图跨帧保留（Setup 的 off 分支 / ssgi.Dispose 负责释放）
     }
 
     static bool copyTextureSupported = SystemInfo.copyTextureSupport > CopyTextureSupport.None; 
@@ -722,6 +771,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
     public override void RequestResetHistory ()
     {
         taa.RequestResetHistory();
+        ssgi.RequestResetHistory();//SSGI 也有自己的历史（切场景时"相机没动"它同样抓不到）
     }
 
     public override void Dispose()
@@ -729,6 +779,7 @@ public partial class CameraRendererDeferred : CameraRendererBase
         ssr.Dispose();//两张持久的反射图（跨帧的，得自己销毁）+ SSR 的材质
         hiz.Dispose();//HiZ 的主图（跨帧常驻的）+ 它的材质
         taa.Dispose();//TAA 的两张历史图（跨帧的）+ 它的材质
+        ssgi.Dispose();//SSGI 的两张 GI 图（跨帧的）+ 它的材质
         RestoreProjection();//保险：万一中途 return，别把抖过的矩阵留在相机上
         CoreUtils.Destroy(material);
         CoreUtils.Destroy(screenSpaceShadowMaterial);

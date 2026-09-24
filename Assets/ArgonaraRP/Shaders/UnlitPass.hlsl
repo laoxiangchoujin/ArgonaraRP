@@ -84,7 +84,8 @@ float4 UnlitPassFragment(Varyings input) : SV_Target
 //Unlit ShadingModelID = 0
 void UnlitPassFragmentGBuffer(Varyings input, 
     out float4 GT1 : SV_Target0,
-    out float3 GT4 : SV_Target3)
+    out float3 GT4 : SV_Target3,
+    out float3 GT5 : SV_Target4)
 {
     UNITY_SETUP_INSTANCE_ID(input);//frag里，使索引可用
     
@@ -118,8 +119,10 @@ void UnlitPassFragmentGBuffer(Varyings input,
     float3 color = base.rgb;
     uint shadingModelID4_null4 = ((uint)0 << 4)/255.0;
     GT1 = float4(color, shadingModelID4_null4);
+    //和 Lit 的 GBuffer pass 口径一致：GT4 = 间接光（unlit 没有，写 0）、GT5 = 自发光
     float3 emission = GetEmission(config);
-    GT4 = float3(emission);
+    GT4 = 0.0;
+    GT5 = float3(emission);
     // base.rgb += GetEmission(config);
     // return float4(base.rgb, GetFinalAlpha(base.a));//不透明物体强制Alpha=1，保证相机叠加时Alpha值正确
 }

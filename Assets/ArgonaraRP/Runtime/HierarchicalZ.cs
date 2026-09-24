@@ -53,13 +53,13 @@ public class HierarchicalZ
 	///每帧：（按需）建/重建带 mip 链的主图 + 上传 _MaxHiZMipLevel。
 	///**每帧都调**（和 ssr.Setup 一起就行）：它只建图 + 传参数，不碰渲染目标，所以放哪都行；
 	///"要一张完整深度图"是 Draw 那边的事。
-	///use = 本帧要不要 HiZ（渲染器给：比如"SSR 开着"）；为假或没配 shader 时在这里就把主图放了
+	///use = 本帧要不要 HiZ（渲染器给：SSR 或者 SSGI 要）；为假或没配 shader 时在这里就把主图放了
 	///（省显存），并把 _HiZTex 绑成 1×1 黑图兜底（深度 0 = 无穷远 ⇒ 追踪永远不会认为"碰到了"，
 	///也不会采到一张已经被销毁的图）。
 	public void Setup (CommandBuffer buffer, HierarchicalZSettings settings, bool use,
 		int screenWidth, int screenHeight)
 	{
-		if (!use || settings == null || !settings.enabled || settings.Material == null)
+		if (!use || settings == null || settings.Material == null)
 		{
 			material = null;//让 Draw 早退
 			//先解绑再销毁（同重建那条：_HiZTex 是跨帧绑定，销毁后它就成了"不存在的图"）；

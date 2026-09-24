@@ -126,6 +126,9 @@ int _MaxHiZMipLevel;
 //本帧 HiZ 到底可不可用（1/0）。关掉时 C# 会把 _HiZTex 绑成 1×1 黑图（深度 0 = 无穷远），
 //那种情况下照着 Hi-Z 走会"永远不命中" ⇒ 必须靠它退回下面的线性步进 traceRay。
 float _HiZEnabled;
+//SSR **自己**要不要用 Hi-Z 追踪（SSRSettings.useHiZ，由 ScreenSpaceReflection 每帧上传）：
+//关掉就固定走线性步进 —— 拿来对比两种追踪/排查问题。⚠️ 和"资源有没有"（_HiZEnabled）是两件事。
+float _SSRUseHiZ;
 
 //调试开关（**默认关**）：打开后追踪那趟不输出反射，改成按"射线为什么结束"染色 ——
 //  白=命中 / 红=走出屏幕 / 绿=越过相机平面 / 蓝=步数用光 / 黑=起点就没有面（天空）
@@ -612,15 +615,16 @@ float4 TracePassFragment (Varyings input) : SV_Target
     float3 viewDirVS = normalize(startVS);//相机(0,0,0) → 表面点
     float3 reflectDirVS = normalize(reflect(viewDirVS, normalVS));
 
-    //3.沿反射方向在屏幕空间步进找交点：优先用 Hi-Z（按 mip 升降步长，同样的步数能走得更远）；
-    //   HiZ 关掉/不可用时退回线性步进（_HiZEnabled 由 HierarchicalZ 每帧上传，见那边）。
+    //3.沿反射方向在屏幕空间步进找交点：优先用 Hi-Z（按 mip 升降步长，同样的步数能走得更远）。
+    //   **两个条件都满足**才用 Hi-Z：`_HiZEnabled` = 资源这帧有没有（HierarchicalZ 上传，没建就绑黑图）；
+    //   `_SSRUseHiZ` = SSR 自己想不想用（设置里的开关）。任一个为假 ⇒ 退回线性步进（等步长 + 末尾二分）。
     //   ⚠️ 用 if/else 而不是三目：两个函数都往同一组 out 参数里写，三目在 HLSL 里可能两边都求值。
     float2 hitPixel;
     float marchPercent;
     float hitZ;
     float3 traceDebug = 0;//调试用（见文件头的 SSR_TRACE_DEBUG 说明）
     bool hit;
-    if (_HiZEnabled > 0.5)
+    if (_HiZEnabled > 0.5 && _SSRUseHiZ > 0.5)
     {
         hit = traceRayWithHiZ(startVS, reflectDirVS, normalVS, hitPixel, marchPercent, hitZ, traceDebug);
     }

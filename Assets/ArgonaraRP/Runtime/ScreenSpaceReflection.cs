@@ -22,7 +22,8 @@ public class ScreenSpaceReflection
 		ssrRoughnessMipScaleId = Shader.PropertyToID("_SSRRoughnessMipScale"),
 		ssrRoughnessMipBiasId = Shader.PropertyToID("_SSRRoughnessMipBias"),
 		ssrFireflySuppressionId = Shader.PropertyToID("_SSRFireflySuppression"),
-		ssrFireflyStrengthId = Shader.PropertyToID("_SSRFireflyStrength");
+		ssrFireflyStrengthId = Shader.PropertyToID("_SSRFireflyStrength"),
+		ssrUseHiZId = Shader.PropertyToID("_SSRUseHiZ");//SSR 自己要不要用 Hi-Z 追踪（和"资源有没有"= _HiZEnabled 是两件事）
 
 	///把 SSRSettings 里的调参上传成全局 uniform（每帧一次就够，不必每趟都传）
 	private static void SetParameters(CommandBuffer buffer, SSRSettings ssrSettings)
@@ -46,6 +47,8 @@ public class ScreenSpaceReflection
 		buffer.SetGlobalFloat(ssrRoughnessMipBiasId, ssrSettings.roughnessMipBias);
 		buffer.SetGlobalFloat(ssrFireflySuppressionId, ssrSettings.fireflySuppression ? 1f : 0f);
 		buffer.SetGlobalFloat(ssrFireflyStrengthId, ssrSettings.fireflyStrength);
+		//追踪方式：关掉就固定走线性步进（shader 里两个条件都得满足才用 Hi-Z）
+		buffer.SetGlobalFloat(ssrUseHiZId, ssrSettings.useHiZ ? 1f : 0f);
 	}
 
 	//=========================== SSR 的两张持久反射图（跨帧双缓冲）==========================

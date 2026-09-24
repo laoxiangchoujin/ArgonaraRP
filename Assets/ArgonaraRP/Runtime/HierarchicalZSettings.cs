@@ -1,11 +1,11 @@
 using UnityEngine;
 
+//Hi-Z（分层深度图）的设置：挂在管线资产**顶层**的一份（不再放 SSR 里面）。
+//它是被**消费**的资源 —— SSR 和 SSGI 都用它，"本帧要不要建"由消费它的特性决定
+//（渲染器传 useSSR || useSSGI）⇒ 这里**没有**总开关。
 [System.Serializable]
 public class HierarchicalZSettings
 {
-    //总开关：关掉时渲染器不建 HiZ、不跑降采样（SSR 只能退回线性步进）
-    public bool enabled = true;
-
     //mip 级数：越大远处跳得越快（顶级只剩几个像素就没意义了）。1080p 用 6 级：mip0 全分辨率、顶级 30×17
     [Range(2, 12)] public int mipCount = 6;
 

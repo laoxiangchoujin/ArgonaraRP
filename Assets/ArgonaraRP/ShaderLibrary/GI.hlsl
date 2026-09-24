@@ -43,6 +43,15 @@ TEXTURE2D(_SSRTex);
 //半分辨率+模糊会把高光峰值摊平，觉得暗就用它补一点
 float _SSRIntensity;
 
+//屏幕空间间接漫反射（SSGI）的 GI 图：**rgb = 间接漫反射的辐照度**（和 SampleLightProbe 同口径、屏幕空间结果与SH兜底已混好；
+//⚠️ 别在里面乘"接收点"的 albedo —— 外层 IndirectBRDF 还会乘 k_d × albedo）、a = 可信度（0 = 完全别信它）。
+//声明放这和 _SSRTex 同理：所有走间接光的 shader 都 include 了 GI.hlsl。
+//**没开 SSGI 或没接 SSGI 的路径（前向）由渲染器绑 1×1 纯黑**（a = 0 ⇒ 下面 lerp 的权重是 0）⇒ 自动退回烘焙，
+//所以同样不需要任何开关 uniform。
+TEXTURE2D(_SSGITex);
+//间接漫反射的亮度倍率：只乘 GI 颜色，不碰可信度 a
+float _SSGIIntensity;
+
 struct GI
 {
 	float3 diffuse;
@@ -167,12 +176,18 @@ float3 SampleEnvironment (Surface surfaceWS, BRDF brdf, float2 screenUV) {
 	return lerp(environment, ssr.rgb, saturate(ssr.a));
 }
 
-//screenUV：间接高光要用它去采"上一帧的SSR图"；环境反射与SSR在这里就按可信度a混好（三参变体）
+//screenUV：间接高光要用它去采"上一帧的SSR图"（环境反射与SSR在这里按可信度a混好）；间接漫反射也用它采"上一帧的SSGI图"
 //⇒ 调用方拿到 gi 之后**不用**再动 gi.specular（免得两处各算一遍）
 GI GetGI(float2 lightMapUV, Surface surfaceWS, BRDF brdf, float2 screenUV)
 {
 	GI gi;
-	gi.diffuse = SampleLightmap(lightMapUV) + SampleLightProbe(surfaceWS);
+	float3 baked = SampleLightmap(lightMapUV) + SampleLightProbe(surfaceWS);
+	//屏幕空间间接漫反射（SSGI）：按可信度 a 与烘焙结果加权。
+	//a = 0（没开 SSGI / 这条路径没接 / 没追到 / 屏幕边缘）⇒ 逐像素等于纯烘焙结果，所以不需要开关 uniform。
+	//⚠️ _SSGITex 是半分辨率的：双线性采样顺便当上采样（前景高频会串一点色，以后可换深度/法线引导的上采样）
+	float4 ssgi = SAMPLE_TEXTURE2D_LOD(_SSGITex, sampler_linear_clamp, screenUV, 0);
+	ssgi.rgb *= _SSGIIntensity;
+	gi.diffuse = lerp(baked, ssgi.rgb, saturate(ssgi.a));
 	gi.specular = SampleEnvironment(surfaceWS, brdf, screenUV);
 	gi.shadowMask.always = false;
 	gi.shadowMask.distance = false;

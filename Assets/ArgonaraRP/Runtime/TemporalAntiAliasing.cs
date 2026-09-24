@@ -171,11 +171,21 @@ public class TemporalAntiAliasing
 		return state.jitteredProjection;
 	}
 
+	///本帧抖动量（**UV 单位**，就是上传给 shader 的 `_TAAJitter`）。`GetJitteredProjection` 之后调才有本帧的值。
+	///给别的屏幕空间特性复用：**凡是"用深度重投影查历史"的，都要和 TAA 一样把本帧抖动加回去**
+	///（历史 UV 是从"未抖动的上一帧 VP"投出来的 ⇒ 天然带一个 −j；不加回来就等于每帧去偏了半个像素的位置采历史）。
+	public Vector2 GetJitterUV (Camera camera)
+	{
+		CameraState state = FindState(camera);
+		return state != null ? state.jitter : Vector2.zero;
+	}
+
 	///本帧那一趟：**本帧颜色（_SourceTexture）+ 上一帧历史（_HistoryTex）→ 写进"另一张"历史图**，
 	///再把结果 **blit 回颜色附件**（后处理 / DrawFinal 接着用），最后交换双缓冲索引（在 Cleanup 里）。
 	///colorAttachment / depthAttachment：调用方自己的附件 id（两侧名字不同，所以传进来）。
 	///⚠️ 得传 camera：状态是每个相机一份（同一个渲染器实例被多台相机轮流用）。
-	///⚠️ 调用方要紧接着 `ExecuteBuffer()`：后面（后处理 / DrawFinal）拿到的必须是**本帧混合后**的颜色。
+	///⚠️ 调用方要紧接着 `ExecuteBuffer()`：后面（后处理 / DrawFinal）拿到的必须是**本帧混合后**的颜色；
+	///   本趟改完 `buffer.name` **不还**（见函数内注释）⇒ 调用方在那句 ExecuteBuffer 之后再恢复。
 	public void Draw (CommandBuffer buffer, Camera camera, RenderTargetIdentifier colorAttachment,
 		RenderTargetIdentifier depthAttachment)
 	{
@@ -188,8 +198,9 @@ public class TemporalAntiAliasing
 		//本帧写这张；另一张（state.readIndex 那张）是"上一帧的结果"，Setup 里已经绑给 _HistoryTex 了
 		RenderTexture writeTexture = state.historyTextures[1 - state.readIndex];
 
-		//帧调试器是按"命令缓冲区的名字"给每次执行分组的：不改名字的话这一趟会挂在上一段下面
-		string restoreName = buffer.name;
+		//帧调试器是按"命令缓冲区的名字"给每次执行分组的：不改名字的话这一趟会挂在上一段下面。
+		//⚠️ 这里**不还**（和 SSR / HiZ / SSGI 一个惯例）：调用方紧接着 ExecuteBuffer，那一刻的名字就是外层组名；
+		//   还回去会让 TAA 那一组被上一层（"Render Camera Deferred"）包住 ⇒ 由调用方在那句之后自己恢复。
 		buffer.name = "Temporal Anti Aliasing";
 		buffer.BeginSample("Temporal Anti Aliasing");
 
@@ -209,7 +220,6 @@ public class TemporalAntiAliasing
 		buffer.Blit(writeTexture, colorAttachment);
 
 		buffer.EndSample("Temporal Anti Aliasing");
-		buffer.name = restoreName;
 	}
 
 	///每帧末尾调（**在 Draw 之后**）：换双缓冲索引 + 把本帧 VP 存成"上一帧 VP" + 清 resetHistory。
